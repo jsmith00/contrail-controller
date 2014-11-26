@@ -73,6 +73,7 @@ public:
     const int xen_ll_plen() const { return xen_ll_.plen_; }
     const Ip4Address &xen_ll_gw() const { return xen_ll_.gw_; }
 
+    const std::string &agent_name() const { return agent_name_; }
     const std::string &eth_port() const { return eth_port_; }
     const Ip4Address &xmpp_server_1() const { return xmpp_server_1_; }
     const Ip4Address &xmpp_server_2() const { return xmpp_server_2_; }
@@ -92,6 +93,7 @@ public:
     bool headless_mode() const {return headless_mode_;}
     bool simulate_evpn_tor() const {return simulate_evpn_tor_;}
     std::string si_netns_command() const {return si_netns_command_;}
+    std::string si_docker_command() const {return si_docker_command_;}
     const int si_netns_workers() const {return si_netns_workers_;}
     const int si_netns_timeout() const {return si_netns_timeout_;}
     std::string si_haproxy_ssl_cert_path() const {
@@ -233,6 +235,7 @@ private:
     bool enable_service_options_;
 
     PortInfo vhost_;
+    std::string agent_name_;
     std::string eth_port_;
     uint16_t xmpp_instance_count_;
     Ip4Address xmpp_server_1_;
@@ -282,6 +285,7 @@ private:
     //simulated compute node behaves as bare metal.
     bool simulate_evpn_tor_;
     std::string si_netns_command_;
+    std::string si_docker_command_;
     int si_netns_workers_;
     int si_netns_timeout_;
     std::string si_haproxy_ssl_cert_path_;

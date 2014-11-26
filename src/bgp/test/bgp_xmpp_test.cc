@@ -220,6 +220,24 @@ protected:
         validate_done_ = true;
     }
 
+    static void ValidateRoutingInstanceSummaryResponse(Sandesh *sandesh,
+            vector<string> &result) {
+        ShowRoutingInstanceSummaryResp *resp =
+                dynamic_cast<ShowRoutingInstanceSummaryResp *>(sandesh);
+        TASK_UTIL_EXPECT_TRUE(resp != NULL);
+
+        TASK_UTIL_EXPECT_EQ(result.size(), resp->get_instances().size());
+
+        cout << "*******************************************************"<<endl;
+        for (size_t i = 0; i < resp->get_instances().size(); ++i) {
+            TASK_UTIL_EXPECT_EQ(result[i], resp->get_instances()[i].get_name());
+            cout << resp->get_instances()[i].log() << endl;
+        }
+        cout << "*******************************************************"<<endl;
+        cout << endl;
+        validate_done_ = true;
+    }
+
     static void ValidateNeighborResponse(Sandesh *sandesh,
                                          vector<size_t> &result) {
         BgpNeighborListResp *resp =
@@ -239,6 +257,24 @@ protected:
                  cout << "\t" <<
                      resp->get_neighbors()[i].routing_tables[j].name << endl;
             }
+        }
+        cout << "*******************************************************"<<endl;
+        cout << endl;
+        validate_done_ = true;
+    }
+
+    static void ValidateNeighborSummaryResponse(Sandesh *sandesh,
+                                                const vector<string> &result) {
+        ShowBgpNeighborSummaryResp *resp =
+                dynamic_cast<ShowBgpNeighborSummaryResp *>(sandesh);
+        TASK_UTIL_EXPECT_TRUE(resp != NULL);
+        TASK_UTIL_EXPECT_EQ(result.size(), resp->get_neighbors().size());
+
+        cout << "*******************************************************"<<endl;
+        for (size_t i = 0; i < resp->get_neighbors().size(); i++) {
+            cout << resp->get_neighbors()[i].log() << endl;
+            TASK_UTIL_EXPECT_EQ(result[i],
+                    resp->get_neighbors()[i].peer_address);
         }
         cout << "*******************************************************"<<endl;
         cout << endl;
@@ -322,7 +358,7 @@ const char *BgpXmppUnitTest::config_tmpl = "\
     <bgp-router name=\'B\'>\
         <identifier>192.168.0.2</identifier>\
         <autonomous-system>64512</autonomous-system>\
-        <address>127.0.0.1</address>\
+        <address>127.0.0.2</address>\
         <port>%d</port>\
         <session to=\'A\'>\
             <address-families>\
@@ -442,7 +478,7 @@ TEST_F(BgpXmppUnitTest, Connection) {
     WAIT_EQ(true, validate_done_);
 
     // show specific instance
-    cout << "ValidateRoutingInstanceResponse:" << endl;
+    cout << "ValidateRoutingInstanceResponse for __default__:" << endl;
     Sandesh::set_client_context(&sandesh_context);
     result = list_of(6);
     Sandesh::set_response_callback(boost::bind(ValidateRoutingInstanceResponse,
@@ -455,7 +491,7 @@ TEST_F(BgpXmppUnitTest, Connection) {
     WAIT_EQ(true, validate_done_);
 
     // show non-existent instance
-    cout << "ValidateRoutingInstanceResponse:" << endl;
+    cout << "ValidateRoutingInstanceResponse for xyz:" << endl;
     Sandesh::set_client_context(&sandesh_context);
     result.clear();
     Sandesh::set_response_callback(boost::bind(ValidateRoutingInstanceResponse,
@@ -465,6 +501,19 @@ TEST_F(BgpXmppUnitTest, Connection) {
     validate_done_ = false;
     req->HandleRequest();
     req->Release();
+    WAIT_EQ(true, validate_done_);
+
+    // show instance summary
+    cout << "ValidateRoutingInstanceSummaryResponse:" << endl;
+    Sandesh::set_client_context(&sandesh_context);
+    vector<string> sresult =
+        list_of(BgpConfigManager::kMasterInstance)("blue")("red");
+    Sandesh::set_response_callback(
+        boost::bind(ValidateRoutingInstanceSummaryResponse, _1, sresult));
+    ShowRoutingInstanceSummaryReq *sreq = new ShowRoutingInstanceSummaryReq;
+    validate_done_ = false;
+    sreq->HandleRequest();
+    sreq->Release();
     WAIT_EQ(true, validate_done_);
 
     // show neighbor
@@ -502,6 +551,53 @@ TEST_F(BgpXmppUnitTest, Connection) {
     nbr_req->Release();
     WAIT_EQ(true, validate_done_);
 
+    // show neighbor for given name
+    cout << "ValidateNeighborResponse for agent@vnsw.contrailsystems.com:" << endl;
+    result = list_of(9);
+    Sandesh::set_response_callback(boost::bind(ValidateNeighborResponse,
+                                   _1, result));
+    nbr_req = new BgpNeighborReq;
+    nbr_req->set_neighbor("agent@vnsw.contrailsystems.com");
+    validate_done_ = false;
+    nbr_req->HandleRequest();
+    nbr_req->Release();
+    WAIT_EQ(true, validate_done_);
+
+    // show neighbor for given name
+    cout << "ValidateNeighborResponse for 127.0.0.1:" << endl;
+    result = list_of(9);
+    Sandesh::set_response_callback(boost::bind(ValidateNeighborResponse,
+                                   _1, result));
+    nbr_req = new BgpNeighborReq;
+    nbr_req->set_neighbor("agent@vnsw.contrailsystems.com");
+    validate_done_ = false;
+    nbr_req->HandleRequest();
+    nbr_req->Release();
+    WAIT_EQ(true, validate_done_);
+
+    // show neighbor for given address
+    cout << "ValidateNeighborResponse for 127.0.0.2:" << endl;
+    result = list_of(2);
+    Sandesh::set_response_callback(boost::bind(ValidateNeighborResponse,
+                                   _1, result));
+    nbr_req = new BgpNeighborReq;
+    nbr_req->set_neighbor("127.0.0.2");
+    validate_done_ = false;
+    nbr_req->HandleRequest();
+    nbr_req->Release();
+    WAIT_EQ(true, validate_done_);
+
+    // show neighbor summary
+    cout << "ValidateNeighborSummaryResponse:" << endl;
+    vector<string> s_result = list_of("127.0.0.2")("127.0.0.1");
+    Sandesh::set_response_callback(boost::bind(ValidateNeighborSummaryResponse,
+                                   _1, s_result));
+    ShowBgpNeighborSummaryReq *nbr_s_req = new ShowBgpNeighborSummaryReq;
+    validate_done_ = false;
+    nbr_s_req->HandleRequest();
+    nbr_s_req->Release();
+    WAIT_EQ(true, validate_done_);
+
     // show route
     cout << "ValidateShowRouteResponse:" << endl;
     result = list_of(1)(1)(1)(1);
@@ -528,12 +624,13 @@ TEST_F(BgpXmppUnitTest, Connection) {
     WAIT_EQ(true, validate_done_);
 
     // show route for a routing instance
-    cout << "ValidateRoutingInstanceResponse for __default__:" << endl;
+    cout << "ValidateShowRouteResponse for __default__:" << endl;
     result = list_of(1)(1);
     Sandesh::set_response_callback(boost::bind(ValidateShowRouteResponse, _1,
                                    result));
     show_req = new ShowRouteReq;
-    show_req->set_routing_instance("default-domain:default-project:ip-fabric:__default__");
+    show_req->set_routing_instance(
+        "default-domain:default-project:ip-fabric:__default__");
     validate_done_ = false;
     show_req->HandleRequest();
     show_req->Release();

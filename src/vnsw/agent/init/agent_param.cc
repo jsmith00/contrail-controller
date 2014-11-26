@@ -453,6 +453,8 @@ void AgentParam::ParseSimulateEvpnTor() {
 void AgentParam::ParseServiceInstance() {
     GetValueFromTree<string>(si_netns_command_,
                              "SERVICE-INSTANCE.netns_command");
+    GetValueFromTree<string>(si_docker_command_,
+                             "SERVICE-INSTANCE.docker_command");
     GetValueFromTree<int>(si_netns_workers_,
                           "SERVICE-INSTANCE.netns_workers");
     GetValueFromTree<int>(si_netns_timeout_,
@@ -592,6 +594,7 @@ void AgentParam::ParseHeadlessModeArguments
 void AgentParam::ParseServiceInstanceArguments
     (const boost::program_options::variables_map &var_map) {
     GetOptValue<string>(var_map, si_netns_command_, "SERVICE-INSTANCE.netns_command");
+    GetOptValue<string>(var_map, si_docker_command_, "SERVICE-INSTANCE.docker_command");
     GetOptValue<int>(var_map, si_netns_workers_, "SERVICE-INSTANCE.netns_workers");
     GetOptValue<int>(var_map, si_netns_timeout_, "SERVICE-INSTANCE.netns_timeout");
     GetOptValue<string>(var_map, si_haproxy_ssl_cert_path_,
@@ -604,6 +607,7 @@ void AgentParam::ParseServiceInstanceArguments
 void AgentParam::InitFromSystem() {
     boost::system::error_code error;
     host_name_ = boost::asio::ip::host_name(error);
+    agent_name_ = host_name_;
 
     struct stat fstat;
     if (stat("/proc/xen", &fstat) == 0) {
@@ -824,6 +828,7 @@ void AgentParam::LogConfig() const {
         LOG(DEBUG, "Simulate EVPN TOR           : " << simulate_evpn_tor_);
     }
     LOG(DEBUG, "Service instance netns cmd  : " << si_netns_command_);
+    LOG(DEBUG, "Service instance docker cmd  : " << si_docker_command_);
     LOG(DEBUG, "Service instance workers    : " << si_netns_workers_);
     LOG(DEBUG, "Service instance timeout    : " << si_netns_timeout_);
     LOG(DEBUG, "Service instance HAProxy ssl: " << si_haproxy_ssl_cert_path_);
@@ -873,8 +878,8 @@ AgentParam::AgentParam(Agent *agent, bool enable_flow_options,
         enable_vhost_options_(enable_vhost_options),
         enable_hypervisor_options_(enable_hypervisor_options),
         enable_service_options_(enable_service_options),
-        vhost_(), eth_port_(), xmpp_instance_count_(), xmpp_server_1_(),
-        xmpp_server_2_(), dns_server_1_(), dns_server_2_(),
+        vhost_(), agent_name_(), eth_port_(), xmpp_instance_count_(),
+        xmpp_server_1_(), xmpp_server_2_(), dns_server_1_(), dns_server_2_(),
         dns_port_1_(ContrailPorts::DnsServerPort()),
         dns_port_2_(ContrailPorts::DnsServerPort()),
         dss_server_(), mgmt_ip_(), mode_(MODE_KVM), xen_ll_(),
@@ -889,7 +894,7 @@ AgentParam::AgentParam(Agent *agent, bool enable_flow_options,
         vrouter_stats_interval_(kVrouterStatsInterval),
         vmware_physical_port_(""), test_mode_(false), debug_(false), tree_(),
         headless_mode_(false), simulate_evpn_tor_(false),
-        si_netns_command_(), si_netns_workers_(0),
+        si_netns_command_(), si_docker_command_(), si_netns_workers_(0),
         si_netns_timeout_(0), si_haproxy_ssl_cert_path_(),
         vmware_mode_(ESXI_NEUTRON) {
 

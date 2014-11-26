@@ -431,7 +431,8 @@ public:
             }
         }
     }
-    static void FillXmppNeighborInfo(vector<BgpNeighborResp> *, BgpServer *, BgpXmppChannel *);
+    static void FillXmppNeighborInfo(vector<BgpNeighborResp> *, BgpServer *,
+        const string &neighbor, BgpXmppChannel *);
     static bool CallbackS1(const Sandesh *sr,
             const RequestPipeline::PipeSpec ps,
             int stage, int instNum,
@@ -447,7 +448,12 @@ public:
 };
 
 void ShowNeighborHandler::FillXmppNeighborInfo(
-        vector<BgpNeighborResp> *nbr_list, BgpServer *bgp_server, BgpXmppChannel *bx_channel) {
+        vector<BgpNeighborResp> *nbr_list, BgpServer *bgp_server,
+        const string &neighbor, BgpXmppChannel *bx_channel) {
+    if (!neighbor.empty() && bx_channel->ToString() != neighbor &&
+        bx_channel->remote_endpoint().address().to_string() != neighbor) {
+        return;
+    }
     BgpNeighborResp resp;
     resp.set_peer(bx_channel->ToString());
     resp.set_peer_address(bx_channel->remote_endpoint().address().to_string());
@@ -476,24 +482,26 @@ bool ShowNeighborHandler::CallbackS1(const Sandesh *sr,
             int stage, int instNum,
             RequestPipeline::InstData * data) {
     ShowNeighborData* mydata = static_cast<ShowNeighborData*>(data);
-    const BgpNeighborReq *req = static_cast<const BgpNeighborReq *>(ps.snhRequest_.get());
-    BgpSandeshContext *bsc = static_cast<BgpSandeshContext *>(req->client_context());
+    const BgpNeighborReq *req =
+        static_cast<const BgpNeighborReq *>(ps.snhRequest_.get());
+    BgpSandeshContext *bsc =
+        static_cast<BgpSandeshContext *>(req->client_context());
     RoutingInstanceMgr *rim = bsc->bgp_server->routing_instance_mgr();
     if (req->get_domain() != "") {
         RoutingInstance *ri = rim->GetRoutingInstance(req->get_domain());
         if (ri)
-            ri->peer_manager()->FillBgpNeighborInfo(mydata->nbr_list,
-                req->get_ip_address());
+            ri->peer_manager()->FillBgpNeighborInfo(&mydata->nbr_list,
+                req->get_neighbor(), false);
     } else {
         RoutingInstanceMgr::RoutingInstanceIterator it = rim->begin();
         for (;it != rim->end(); it++) {
-            it->peer_manager()->FillBgpNeighborInfo(mydata->nbr_list,
-                req->get_ip_address());
+            it->peer_manager()->FillBgpNeighborInfo(&mydata->nbr_list,
+                req->get_neighbor(), false);
         }
     }
 
     bsc->xmpp_peer_manager->VisitChannels(boost::bind(FillXmppNeighborInfo,
-                                                      &mydata->nbr_list, bsc->bgp_server, _1));
+        &mydata->nbr_list, bsc->bgp_server, req->get_neighbor(), _1));
 
     return true;
 }
@@ -553,6 +561,69 @@ bool ShowNeighborHandler::CallbackS3(const Sandesh *sr,
     resp->set_context(req->context());
     resp->Response();
     return true;
+}
+
+class ShowNeighborSummaryHandler {
+public:
+    static void FillXmppNeighborInfo(vector<BgpNeighborResp> *nbr_list,
+        BgpXmppChannel *bx_channel);
+    static bool CallbackS1(const Sandesh *sr,
+            const RequestPipeline::PipeSpec ps,
+            int stage, int instNum,
+            RequestPipeline::InstData *data);
+};
+
+void ShowNeighborSummaryHandler::FillXmppNeighborInfo(
+        vector<BgpNeighborResp> *nbr_list, BgpXmppChannel *bx_channel) {
+    BgpNeighborResp resp;
+    resp.set_peer(bx_channel->ToString());
+    resp.set_deleted(bx_channel->peer_deleted());
+    resp.set_peer_address(bx_channel->remote_endpoint().address().to_string());
+    resp.set_peer_type("internal");
+    resp.set_encoding("XMPP");
+    resp.set_state(bx_channel->StateName());
+    resp.set_local_address(bx_channel->local_endpoint().address().to_string());
+    const XmppConnection *connection = bx_channel->channel()->connection();
+    resp.set_negotiated_hold_time(connection->GetNegotiatedHoldTime());
+    nbr_list->push_back(resp);
+}
+
+bool ShowNeighborSummaryHandler::CallbackS1(const Sandesh *sr,
+            const RequestPipeline::PipeSpec ps,
+            int stage, int instNum,
+            RequestPipeline::InstData * data) {
+    vector<BgpNeighborResp> nbr_list;
+    const BgpNeighborReq *req =
+        static_cast<const BgpNeighborReq *>(ps.snhRequest_.get());
+    BgpSandeshContext *bsc =
+        static_cast<BgpSandeshContext *>(req->client_context());
+    RoutingInstanceMgr *rim = bsc->bgp_server->routing_instance_mgr();
+    for (RoutingInstanceMgr::RoutingInstanceIterator it = rim->begin();
+         it != rim->end(); ++it) {
+        it->peer_manager()->FillBgpNeighborInfo(&nbr_list, string(), true);
+    }
+
+    bsc->xmpp_peer_manager->VisitChannels(
+        boost::bind(FillXmppNeighborInfo, &nbr_list, _1));
+
+    ShowBgpNeighborSummaryResp *resp = new ShowBgpNeighborSummaryResp;
+    resp->set_neighbors(nbr_list);
+    resp->set_context(req->context());
+    resp->Response();
+    return true;
+}
+
+// handler for 'show bgp neighbor summary'
+void ShowBgpNeighborSummaryReq::HandleRequest() const {
+    RequestPipeline::PipeSpec ps(this);
+    RequestPipeline::StageSpec s1;
+    TaskScheduler *scheduler = TaskScheduler::GetInstance();
+    s1.taskId_ = scheduler->GetTaskId("bgp::PeerMembership");
+    s1.cbFn_ = ShowNeighborSummaryHandler::CallbackS1;
+    s1.instances_.push_back(0);
+    ps.stages_= list_of(s1);
+    RequestPipeline rp(ps);
+
 }
 
 class ShowNeighborStatisticsHandler {
@@ -845,6 +916,69 @@ void ShowRoutingInstanceReq::HandleRequest() const {
 
     s1.taskId_ = scheduler->GetTaskId("bgp::ShowCommand");
     s1.cbFn_ = ShowRoutingInstanceHandler::CallbackS1;
+    s1.instances_.push_back(0);
+    ps.stages_ = list_of(s1);
+    RequestPipeline rp(ps);
+}
+
+class ShowRoutingInstanceSummaryHandler {
+public:
+    static void FillRoutingInstanceInfo(
+        vector<ShowRoutingInstance> *ri_list, const RoutingInstance &ri);
+    static bool CallbackS1(const Sandesh *sr,
+        const RequestPipeline::PipeSpec ps,
+        int stage, int instNum, RequestPipeline::InstData *data);
+};
+
+void ShowRoutingInstanceSummaryHandler::FillRoutingInstanceInfo(
+    vector<ShowRoutingInstance> *ri_list, const RoutingInstance &ri) {
+    ShowRoutingInstance inst;
+    inst.set_name(ri.name());
+    inst.set_virtual_network(ri.virtual_network());
+    inst.set_vn_index(ri.virtual_network_index());
+    inst.set_vxlan_id(ri.vxlan_id());
+    inst.set_deleted(ri.deleted());
+    vector<string> import_rt;
+    BOOST_FOREACH(RouteTarget rt, ri.GetImportList()) {
+        import_rt.push_back(rt.ToString());
+    }
+    inst.set_import_target(import_rt);
+    vector<string> export_rt;
+    BOOST_FOREACH(RouteTarget rt, ri.GetExportList()) {
+        export_rt.push_back(rt.ToString());
+    }
+    inst.set_export_target(export_rt);
+    ri_list->push_back(inst);
+}
+
+bool ShowRoutingInstanceSummaryHandler::CallbackS1(const Sandesh *sr,
+    const RequestPipeline::PipeSpec ps, int stage, int instNum,
+    RequestPipeline::InstData *data) {
+    const ShowRoutingInstanceSummaryReq *req =
+        static_cast<const ShowRoutingInstanceSummaryReq *>(ps.snhRequest_.get());
+    BgpSandeshContext *bsc =
+        static_cast<BgpSandeshContext *>(req->client_context());
+    RoutingInstanceMgr *rim = bsc->bgp_server->routing_instance_mgr();
+    vector<ShowRoutingInstance> ri_list;
+    for (RoutingInstanceMgr::RoutingInstanceIterator it = rim->begin();
+        it != rim->end(); ++it) {
+        FillRoutingInstanceInfo(&ri_list, *it);
+    }
+
+    ShowRoutingInstanceSummaryResp *resp = new ShowRoutingInstanceSummaryResp;
+    resp->set_instances(ri_list);
+    resp->set_context(req->context());
+    resp->Response();
+    return true;
+}
+
+void ShowRoutingInstanceSummaryReq::HandleRequest() const {
+    RequestPipeline::PipeSpec ps(this);
+    RequestPipeline::StageSpec s1;
+    TaskScheduler *scheduler = TaskScheduler::GetInstance();
+
+    s1.taskId_ = scheduler->GetTaskId("bgp::ShowCommand");
+    s1.cbFn_ = ShowRoutingInstanceSummaryHandler::CallbackS1;
     s1.instances_.push_back(0);
     ps.stages_ = list_of(s1);
     RequestPipeline rp(ps);

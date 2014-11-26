@@ -43,7 +43,6 @@ from cfgm_common.uve.virtual_network.ttypes import *
 from sandesh_common.vns.ttypes import Module, NodeType
 from sandesh_common.vns.constants import ModuleNames, Module2NodeType, NodeTypeNames, INSTANCE_ID_DEFAULT
 from schema_transformer.sandesh.st_introspect import ttypes as sandesh
-from ncclient import manager
 import discoveryclient.client as client
 try:
     #python2.7
@@ -237,7 +236,6 @@ class VirtualNetworkST(DictST):
                 self.dynamic_acl = acl_obj
 
         self.ipams = {}
-        self.extend = False
         self.rt_list = set()
         self._route_target = 0
         self.route_table_refs = set()
@@ -508,28 +506,10 @@ class VirtualNetworkST(DictST):
             pass
     # end free_service_chain_vlan
 
-    def set_properties(self, properties):
-        if properties:
-            new_extend = False #properties.extend_to_external_routers
-        else:
-            new_extend = False
-        if self.extend != new_extend:
-            self.extend_to_external_routers(new_extend)
-            self.extend = new_extend
-    # end set_properties
-
     def get_route_target(self):
         return "target:%s:%d" % (self.get_autonomous_system(),
                                  self._route_target)
     # end get_route_target
-
-    def extend_to_external_routers(self, extend):
-        for router in BgpRouterST.values():
-            if extend:
-                router.add_routing_instance(self.name, self.get_route_target)
-            else:
-                router.delete_routing_instance(self.name)
-    # end extend_to_external_routers
 
     def locate_routing_instance_no_target(self, rinst_name):
         """ locate a routing instance but do not allocate a route target """
@@ -553,6 +533,7 @@ class VirtualNetworkST(DictST):
         if rinst_name in self.rinst:
             return self.rinst[rinst_name]
 
+        is_default = (rinst_name == self._default_ri_name)
         alloc_new = False
         rinst_fq_name_str = '%s:%s' % (self.obj.get_fq_name_str(), rinst_name)
         old_rtgt = None
@@ -586,12 +567,14 @@ class VirtualNetworkST(DictST):
                     rinst_obj = None
                 else:
                     rinst_obj.set_route_target(rtgt_obj, inst_tgt_data)
+                    rinst_obj.set_routing_instance_is_default(is_default)
                     _vnc_lib.routing_instance_update(rinst_obj)
             except NoIdError:
                 rinst_obj = None
             if rinst_obj is None:
                 rinst_obj = RoutingInstance(rinst_name, self.obj)
                 rinst_obj.set_route_target(rtgt_obj, inst_tgt_data)
+                rinst_obj.set_routing_instance_is_default(is_default)
                 _vnc_lib.routing_instance_create(rinst_obj)
         except HttpError as he:
             _sandesh._logger.error(
@@ -630,12 +613,6 @@ class VirtualNetworkST(DictST):
         for sc_list in self.service_chains.values():
             for service_chain in sc_list:
                 service_chain.update_ipams(self.name)
-
-        if self.extend:
-            self.extend_to_external_routers(True)
-        for li in LogicalInterfaceST.values():
-            if self.name == li.virtual_network:
-                li.refresh_virtual_network()
     # end update_ipams
 
     def expand_connections(self):
@@ -1263,6 +1240,8 @@ class SecurityGroupST(DictST):
             # TODO log unknown protocol
             return (ingress_acl_rule_list, egress_acl_rule_list)
 
+        ethertype = prule.ethertype
+
         acl_rule_list = None
         for saddr in prule.src_addresses:
             saddr_match = copy.deepcopy(saddr)
@@ -1281,7 +1260,8 @@ class SecurityGroupST(DictST):
                         action = ActionListType(simple_action='pass')
                         match = MatchConditionType(arule_proto,
                                                    saddr_match, sp,
-                                                   daddr_match, dp)
+                                                   daddr_match, dp,
+                                                   ethertype)
                         acl = AclRuleType(match, action, rule_uuid)
                         acl_rule_list.append(acl)
                     # end for dp
@@ -1841,21 +1821,28 @@ class AclRuleListST(object):
 
     # for types that have start and end integer
     @staticmethod
-    def _range_is_subset(lhs, rhs):
+    def _port_is_subset(lhs, rhs):
         return (lhs.start_port >= rhs.start_port and
                (rhs.end_port == -1 or lhs.end_port <= rhs.end_port))
+
+    @staticmethod
+    def _address_is_subset(lhs, rhs):
+        if rhs.subnet is None and lhs.subnet is None:
+            return rhs.virtual_network in [lhs.virtual_network, 'any']
+        if rhs.subnet is not None and lhs.subnet is not None:
+            return (rhs.subnet.ip_prefix == lhs.subnet.ip_prefix and
+                    rhs.subnet.ip_prefix_len <= lhs.subnet.ip_prefix_len)
+        return False
 
     def _rule_is_subset(self, rule):
         for elem in self._list:
             lhs = rule.match_condition
             rhs = elem.match_condition
-            if (self._range_is_subset(lhs.src_port, rhs.src_port) and
-                self._range_is_subset(lhs.dst_port, rhs.dst_port) and
+            if (self._port_is_subset(lhs.src_port, rhs.src_port) and
+                self._port_is_subset(lhs.dst_port, rhs.dst_port) and
                 rhs.protocol in [lhs.protocol, 'any'] and
-                (rhs.src_address.virtual_network in
-                    [lhs.src_address.virtual_network, 'any']) and
-                (rhs.dst_address.virtual_network in
-                    [lhs.dst_address.virtual_network, 'any'])):
+                self._address_is_subset(lhs.src_address, rhs.src_address) and
+                self._address_is_subset(lhs.dst_address, rhs.dst_address)):
 
                 if not self.dynamic:
                     return True
@@ -1879,13 +1866,8 @@ class BgpRouterST(DictST):
     _ibgp_auto_mesh = None
     def __init__(self, name):
         self.name = name
-        self.config = None
-        self.peers = set()
-        self.address = None
         self.vendor = None
-        self.vnc_managed = False
         self.asn = None
-        self.prouter = None
         self.identifier = None
 
         if self._ibgp_auto_mesh is None:
@@ -1900,7 +1882,6 @@ class BgpRouterST(DictST):
     @classmethod
     def delete(cls, name):
         if name in cls._dict:
-            cls._dict[name].delete_config()
             del cls._dict[name]
     # end delete
 
@@ -1915,10 +1896,10 @@ class BgpRouterST(DictST):
             return
         bgp_router_obj = _vnc_lib.bgp_router_read(fq_name_str=self.name)
         params = bgp_router_obj.get_bgp_router_parameters()
-        params.autonomous_system = my_asn
+        params.autonomous_system = int(asn)
         bgp_router_obj.set_bgp_router_parameters(params)
         _vnc_lib.bgp_router_update(bgp_router_obj)
-        self.asn = my_asn
+        self.asn = int(asn)
         self.update_peering()
     # end update_autonomous_system
 
@@ -1968,334 +1949,7 @@ class BgpRouterST(DictST):
                 _sandesh._logger.error("NoIdError while updating bgp router "
                                        "%s: %s", self.name, str(e))
     # end update_peering
-
-    def set_config(self, params):
-        self.address = params.address
-        self.vendor = params.vendor
-        self.vnc_managed = params.vnc_managed
-        self.update_autonomous_system(params.autonomous_system)
-        self.identifier = params.identifier
-        if self.vendor != "mx" or not self.vnc_managed:
-            if self.config:
-                self.delete_config()
-            return
-
-        first_time = False if self.config else True
-        self.config = etree.Element("group", operation="replace")
-        etree.SubElement(self.config, "name").text = "__contrail__"
-        etree.SubElement(self.config, "type").text = "internal"
-        etree.SubElement(self.config, "local-address").text = params.address
-        if (params.address_families):
-            for family in params.address_families.family:
-                family_etree = etree.SubElement(self.config, "family")
-                family_subtree = etree.SubElement(family_etree, family)
-                etree.SubElement(family_subtree, "unicast")
-        etree.SubElement(self.config, "keep").text = "all"
-        self.push_config()
-
-        if first_time:
-            for vn in VirtualNetworkST.values():
-                if vn.extend:
-                    self.add_routing_instance(vn.name, vn.get_route_target())
-            # end for vn
-            for prouter in PhysicalRouterST.values():
-                for pi_name in prouter.physical_interfaces:
-                    prouter.add_physical_interface(pi_name)
-            # for prouter_name
-        # if first_time
-# end set_config
-
-    def add_peer(self, router):
-        if router in self.peers:
-            return
-        self.peers.add(router)
-        self.push_config()
-    # end add_peer
-
-    def delete_peer(self, router):
-        if router in self.peers:
-            self.peers.remove(router)
-            self.push_config()
-    # end delete_peer
-
-    def add_routing_instance(self, name, route_target, interface=None):
-        if not self.config:
-            return
-        ri_config = etree.Element("routing-instances")
-        ri = etree.SubElement(ri_config, "instance", operation="replace")
-        etree.SubElement(
-            ri, "name").text = "__contrail__" + name.replace(':', '_')
-        etree.SubElement(ri, "instance-type").text = "vrf"
-        if interface:
-            if_element = etree.SubElement(ri, "interface")
-            etree.SubElement(if_element, "name").text = interface
-        rt_element = etree.SubElement(ri, "vrf-target")
-        etree.SubElement(rt_element, "community").text = route_target
-        etree.SubElement(ri, "vrf-table-label")
-        vn = VirtualNetworkST.get(name)
-        if vn and vn.ipams:
-            ri_opt = etree.SubElement(ri, "routing-options")
-            static_config = etree.SubElement(ri_opt, "static")
-            for ipam in vn.ipams.values():
-                for s in ipam.ipam_subnets:
-                    prefix = s.subnet.ip_prefix + \
-                        '/' + str(s.subnet.ip_prefix_len)
-                    route_config = etree.SubElement(static_config, "route")
-                    etree.SubElement(route_config, "name").text = prefix
-                    etree.SubElement(route_config, "discard")
-
-        self.send_netconf(ri_config)
-    # end add_routing_instance
-
-    def delete_routing_instance(self, name):
-        if not self.config:
-            return
-        ri_config = etree.Element("routing-instances")
-        ri = etree.SubElement(ri_config, "instance", operation="delete")
-        etree.SubElement(ri, "name").text = "__contrail__" + name
-        self.send_netconf(ri_config, default_operation="none")
-    # end delete_routing_instance
-
-    def push_config(self):
-        if self.config is None:
-            return
-        group_config = copy.deepcopy(self.config)
-        proto_config = etree.Element("protocols")
-        bgp = etree.SubElement(proto_config, "bgp")
-        bgp.append(group_config)
-        for peer in self.peers:
-            try:
-                address = BgpRouterST._dict[peer].address
-                if address:
-                    nbr = etree.SubElement(group_config, "neighbor")
-                    etree.SubElement(nbr, "name").text = address
-            except KeyError:
-                continue
-        routing_options_config = etree.Element("routing-options")
-        etree.SubElement(
-            routing_options_config,
-            "route-distinguisher-id").text = self.identifier
-        self.send_netconf([proto_config, routing_options_config])
-    # end push_config
-
-    def delete_config(self):
-        if not self.config:
-            return
-        for vn in VirtualNetworkST.values():
-            if vn.extend:
-                self.delete_routing_instance(vn.name)
-        # end for vn
-        for prouter in PhysicalRouterST.values():
-            for pi in prouter.physical_interfaces:
-                prouter.delete_physical_interface(pi)
-        # end for prouter
-
-        self.config = None
-        proto_config = etree.Element("protocols")
-        bgp = etree.SubElement(proto_config, "bgp")
-        group = etree.SubElement(bgp, "group", operation="delete")
-        etree.SubElement(group, "name").text = "__contrail__"
-        self.send_netconf(proto_config, default_operation="none")
-    # end delete_config
-
-    def send_netconf(self, new_config, default_operation="merge"):
-        try:
-            with manager.connect(host=self.address, port=22,
-                                 username="root", password="c0ntrail123",
-                                 unknown_host_cb=lambda x, y: True) as m:
-                add_config = etree.Element(
-                    "config",
-                    nsmap={"xc": "urn:ietf:params:xml:ns:netconf:base:1.0"})
-                config = etree.SubElement(add_config, "configuration")
-                if isinstance(new_config, list):
-                    for nc in new_config:
-                        config.append(nc)
-                else:
-                    config.append(new_config)
-                m.edit_config(
-                    target='candidate', config=etree.tostring(add_config),
-                    test_option='test-then-set',
-                    default_operation=default_operation)
-                m.commit()
-        except Exception as e:
-            _sandesh._logger.error("Router %s: %s" % (self.address, e.message))
-
 # end class BgpRouterST
-
-
-class PhysicalRouterST(DictST):
-    _dict = {}
-
-    def __init__(self, name):
-        self.name = name
-        self.bgp_router = None
-        self.physical_interfaces = set()
-    # end __init__
-
-    @classmethod
-    def delete(cls, name):
-        if name in cls._dict:
-            del cls._dict[name]
-    # end delete
-
-    def add_logical_interface(self, li_name):
-        if not self.bgp_router:
-            return
-        li = LogicalInterfaceST.get(li_name)
-        if not li or not li.virtual_network:
-            return
-        vn = VirtualNetworkST.locate(li.virtual_network)
-        if not vn:
-            return
-        bgp_router = BgpRouterST.get(self.bgp_router)
-        if not bgp_router:
-            return
-        bgp_router.add_routing_instance(
-            li.virtual_network, vn.get_route_target(), li.name)
-    # end add_logical_interface
-
-    def delete_logical_interface(self, li_name):
-        if not self.bgp_router:
-            return
-        li = LogicalInterfaceST.get(li_name)
-        if not li or not li.virtual_network:
-            return
-        bgp_router = BgpRouterST.get(self.bgp_router)
-        if not bgp_router:
-            return
-        bgp_router.delete_routing_instance(li.virtual_network)
-    # end add_logical_interface
-
-    def add_physical_interface(self, pi_name):
-        pi = PhysicalInterfaceST.get(pi_name)
-        if not pi:
-            return
-        for li_name in pi.logical_interfaces:
-            self.add_logical_interface(li_name)
-    # end add_physical_interface
-
-    def delete_physical_interface(self, pi_name):
-        pi = PhysicalInterfaceST.get(pi_name)
-        if not pi:
-            return
-        for li_name in pi.logical_interfaces:
-            self.delete_logical_interface(li_name)
-    # end delete_physical_interface
-
-    def add_physical_interface_config(self, pi_name):
-        if pi_name in self.physical_interfaces:
-            return
-        self.physical_interfaces.add(pi_name)
-        self.add_physical_interface(pi_name)
-    # end add_physical_interface_config
-
-    def delete_physical_interface_config(self, pi_name):
-        if pi_name not in self.physical_interfaces:
-            return
-        self.delete_physical_interface(pi_name)
-        self.physical_interfaces.discard(pi_name)
-    # end delete_physical_interface_config
-
-    def set_bgp_router(self, router_name):
-        if self.bgp_router == router_name:
-            return
-        if self.bgp_router:
-            for pi_name in self.physical_interfaces:
-                self.delete_physical_interface(pi_name)
-        self.bgp_router = router_name
-        if router_name:
-            for pi_name in self.physical_interfaces:
-                self.add_physical_interface(pi_name)
-    # end set_bgp_router
-
-# end PhysicalRouterST
-
-
-class PhysicalInterfaceST(DictST):
-    _dict = {}
-
-    def __init__(self, name):
-        self.name = name
-        self.physical_router = None
-        self.logical_interfaces = set()
-    # end __init__
-
-    @classmethod
-    def delete(cls, name):
-        if name in cls._dict:
-            del cls._dict[name]
-    # end delete
-
-    def add_logical_interface(self, li_name):
-        if not self.physical_router:
-            return
-        pr = PhysicalRouterST.get(self.physical_router)
-        if not pr:
-            return
-        pr.add_logical_interface(li_name)
-    # end add_logical_interface
-
-    def delete_logical_interface(self, li_name):
-        if not self.physical_router:
-            return
-        pr = PhysicalRouterST.get(self.physical_router)
-        if not pr:
-            return
-        pr.delete_logical_interface(li_name)
-    # end delete_logical_interface
-
-    def add_logical_interface_config(self, li_name):
-        if li_name in self.logical_interfaces:
-            return
-        self.logical_interfaces.add(li_name)
-        self.add_logical_interface(li_name)
-    # end add_logical_interface
-
-    def delete_logical_interface_config(self, li_name):
-        if li_name not in self.logical_interfaces:
-            return
-        self.delete_logical_interface(li_name)
-        self.logical_interfaces.discard(li_name)
-    # end add_logical_interface
-# end PhysicalInterfaceST
-
-
-class LogicalInterfaceST(DictST):
-    _dict = {}
-
-    def __init__(self, name):
-        self.name = name
-        self.physical_interface = None
-        self.virtual_network = None
-    # end __init__
-
-    @classmethod
-    def delete(cls, name):
-        if name in cls._dict:
-            del cls._dict[name]
-    # end delete
-
-    def set_virtual_network(self, vn_name):
-        if self.virtual_network == vn_name:
-            return
-        if self.virtual_network and self.physical_interface:
-            pi = PhysicalInterfaceST.get(self.physical_interface)
-            if pi:
-                pi.delete_logical_interface(self.name)
-        self.virtual_network = vn_name
-        if self.virtual_network and self.physical_interface:
-            pi = PhysicalInterfaceST.get(self.physical_interface)
-            if pi:
-                pi.add_logical_interface(self.name)
-    # end set_virtual_network
-
-    def refresh_virtual_network(self):
-        if self.virtual_network and self.physical_interface:
-            pi = PhysicalInterfaceST.get(self.physical_interface)
-            if pi:
-                pi.add_logical_interface(self.name)
-    # end refresh_virtual_network
-# end LogicalInterfaceST
 
 
 class VirtualMachineInterfaceST(DictST):
@@ -2357,7 +2011,7 @@ class VirtualMachineInterfaceST(DictST):
         for lr in LogicalRouterST.values():
             if self.name in lr.interfaces:
                 lr.add_interface(self.name)
-    #end set_virtual_network
+    # end set_virtual_network
     
     def process_analyzer(self):
         try:
@@ -2727,8 +2381,8 @@ class SchemaTransformer(object):
             SecurityGroupST._sg_id_allocator.delete(0)
         SecurityGroupST._sg_id_allocator.reserve(0, '__reserved__')
         VirtualNetworkST._rt_allocator = IndexAllocator(
-            _zookeeper_client, self._zk_path_pfx+_BGP_RTGT_ALLOC_PATH, _BGP_RTGT_MAX_ID,
-            common.BGP_RTGT_MIN_ID)
+            _zookeeper_client, self._zk_path_pfx+_BGP_RTGT_ALLOC_PATH,
+            _BGP_RTGT_MAX_ID, common.BGP_RTGT_MIN_ID)
 
         # Initialize discovery client
         self._disc = None
@@ -2740,8 +2394,6 @@ class SchemaTransformer(object):
 
         _sandesh = Sandesh()
         sandesh.VnList.handle_request = self.sandesh_vn_handle_request
-        sandesh.ServiceChainList.handle_request = \
-            self.sandesh_sc_handle_request
         sandesh.RoutintInstanceList.handle_request = \
             self.sandesh_ri_handle_request
         sandesh.ServiceChainList.handle_request = \
@@ -2763,11 +2415,9 @@ class SchemaTransformer(object):
                                     file=args.log_file,
                                     enable_syslog=args.use_syslog,
                                     syslog_facility=args.syslog_facility)
-        ConnectionState.init(_sandesh, hostname, module_name,
-                instance_id,
+        ConnectionState.init(_sandesh, hostname, module_name, instance_id,
                 staticmethod(ConnectionState.get_process_state_cb),
                 NodeStatusUVE, NodeStatus)
-
 
         self.reinit()
         self.ifmap_search_done = False
@@ -2874,7 +2524,7 @@ class SchemaTransformer(object):
 
     def add_ibgp_auto_mesh(self, idents, meta):
         value = meta.text
-        BgpRouterST.update_ibgp_auto_mesh(value.lower()=="true")
+        BgpRouterST.update_ibgp_auto_mesh(value.lower() == "true")
     # end add_ibgp_auto_mesh
 
     def add_project_virtual_network(self, idents, meta):
@@ -3034,94 +2684,13 @@ class SchemaTransformer(object):
 
     def add_bgp_router_parameters(self, idents, meta):
         router_name = idents['bgp-router']
-        router_params = BgpRouterParams()
-        router_params.build(meta)
-
         router = BgpRouterST.locate(router_name)
-        router.set_config(router_params)
     # end add_bgp_router_parameters
 
     def delete_bgp_router_parameters(self, idents, meta):
         router_name = idents['bgp-router']
         BgpRouterST.delete(router_name)
     # end delete_bgp_router_parameters
-
-    def add_physical_router_bgp_router(self, idents, meta):
-        prouter = PhysicalRouterST.locate(idents['physical-router'])
-        prouter.set_bgp_router(idents['bgp-router'])
-    # end add_physical_router_bgp_router
-
-    def delete_physical_router_bgp_router(self, idents, meta):
-        prouter = PhysicalRouterST.get(idents['physical-router'])
-        if prouter:
-            prouter.set_bgp_router(None)
-    # end add_physical_router_bgp_router
-
-    def add_physical_router_physical_interface(self, idents, meta):
-        pr_name = idents['physical-router']
-        pi_name = idents['physical-interface']
-        prouter = PhysicalRouterST.locate(pr_name)
-        pi = PhysicalInterfaceST.locate(pi_name)
-        pi.physical_router = pr_name
-        prouter.add_physical_interface_config(pi_name)
-    # end add_physical_router_physical_interface
-
-    def delete_physical_router_physical_interface(self, idents, meta):
-        pr_name = idents['physical-router']
-        pi_name = idents['physical-interface']
-        prouter = PhysicalRouterST.get(pr_name)
-        if prouter:
-            prouter.delete_physical_interface_config(pi_name)
-        pi = PhysicalInterfaceST.get(pi_name)
-        if pi:
-            pi.physical_router = None
-    # end delete_physical_router_physical_interface
-
-    def add_physical_interface_logical_interface(self, idents, meta):
-        pi_name = idents['physical-interface']
-        li_name = idents['logical-interface']
-        pi = PhysicalInterfaceST.locate(pi_name)
-        li = LogicalInterfaceST.locate(li_name)
-        pi.add_logical_interface_config(li_name)
-        li.physical_interface = pi_name
-    # end add_physical_interface_logical_interface
-
-    def delete_physical_interface_logical_interface(self, idents, meta):
-        pi_name = idents['physical-interface']
-        li_name = idents['logical-interface']
-        pi = PhysicalInterfaceST.get(pi_name)
-        if pi:
-            pi.delete_logical_interface_config(li_name)
-        li = LogicalInterfaceST.get(li_name)
-        if li:
-            li.physical_interface = None
-    # end delete_physical_interface_logical_interface
-
-    def add_logical_interface_virtual_network(self, idents, meta):
-        li = LogicalInterfaceST.locate(idents['logical-interface'])
-        li.set_virtual_network(idents['virtual-network'])
-    # end add_logical_interface_virtual_network
-
-    def delete_logical_interface_virtual_network(self, idents, meta):
-        li = LogicalInterfaceST.locate(idents['logical-interface'])
-        li.set_virtual_network(None)
-    # end add_logical_interface_virtual_network
-
-    def add_bgp_peering(self, idents, meta):
-        routers = idents['bgp-router']
-        BgpRouterST.locate(routers[0]).add_peer(routers[1])
-        BgpRouterST.locate(routers[1]).add_peer(routers[0])
-    # end add_bgp_peering
-
-    def delete_bgp_peering(self, idents, meta):
-        routers = idents['bgp-router']
-        r0 = BgpRouterST.get(routers[0])
-        r1 = BgpRouterST.get(routers[0])
-        if r0:
-            r0.delete_peer(routers[1])
-        if r1:
-            r1.delete_peer(routers[0])
-    # end delete_bgp_peering
 
     def add_service_instance_properties(self, idents, meta):
         si_name = idents['service-instance']
@@ -3186,22 +2755,6 @@ class SchemaTransformer(object):
         # end for vn_name
         NetworkPolicyST.delete(policy_name)
     # end delete_service_instance_properties
-
-    def add_virtual_network_properties(self, idents, meta):
-        network_name = idents['virtual-network']
-        properties = VirtualNetworkType()
-        properties.build(meta)
-        network = VirtualNetworkST.locate(network_name)
-        if network:
-            network.set_properties(properties)
-    # end add_virtual_network_properties
-
-    def delete_virtual_network_properties(self, idents, meta):
-        network_name = idents['virtual-network']
-        network = VirtualNetworkST.get(network_name)
-        if network:
-            network.set_properties(None)
-    # end delete_virtual_network_properties
 
     def add_virtual_network_route_table(self, idents, meta):
         network_name = idents['virtual-network']
@@ -3516,9 +3069,9 @@ class SchemaTransformer(object):
             try:
                 return func(*args, **kwargs)
             except AllServersUnavailable:
-                ConnectionState.update(conn_type = ConnectionType.DATABASE,
-                    name = 'Cassandra', status = ConnectionStatus.DOWN,
-                    message = '', server_addrs = self._args.cassandra_server_list)
+                ConnectionState.update(conn_type=ConnectionType.DATABASE,
+                    name='Cassandra', status=ConnectionStatus.DOWN,
+                    message='', server_addrs=self._args.cassandra_server_list)
                 raise
         return wrapper
     # end _log_exceptions
@@ -3530,9 +3083,9 @@ class SchemaTransformer(object):
         num_dbnodes = len(self._args.cassandra_server_list)
         connected = False
         # Update connection info
-        ConnectionState.update(conn_type = ConnectionType.DATABASE,
-            name = 'Database', status = ConnectionStatus.INIT,
-            message = '', server_addrs = self._args.cassandra_server_list)
+        ConnectionState.update(conn_type=ConnectionType.DATABASE,
+            name='Database', status=ConnectionStatus.INIT,
+            message='', server_addrs=self._args.cassandra_server_list)
 
         while not connected:
             try:
@@ -3541,16 +3094,16 @@ class SchemaTransformer(object):
                 connected = True
             except Exception as e:
                 # Update connection info
-                ConnectionState.update(conn_type = ConnectionType.DATABASE,
-                    name = 'Database', status = ConnectionStatus.DOWN,
-                    message = '', server_addrs = [cass_server])
+                ConnectionState.update(conn_type=ConnectionType.DATABASE,
+                    name='Database', status=ConnectionStatus.DOWN,
+                    message='', server_addrs=[cass_server])
                 server_idx = (server_idx + 1) % num_dbnodes
                 time.sleep(3)
 
-       # Update connection info
-        ConnectionState.update(conn_type = ConnectionType.DATABASE,
-            name = 'Database', status = ConnectionStatus.UP,
-            message = '', server_addrs = self._args.cassandra_server_list)
+        # Update connection info
+        ConnectionState.update(conn_type=ConnectionType.DATABASE,
+            name='Database', status=ConnectionStatus.UP,
+            message='', server_addrs=self._args.cassandra_server_list)
 
         if self._args.reset_config:
             try:

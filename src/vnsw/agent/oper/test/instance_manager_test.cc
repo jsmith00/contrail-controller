@@ -62,7 +62,8 @@ protected:
         oper_db_.reset(new OperDB(agent_.get()));
         agent_->set_oper_db(oper_db_.get());
         stringstream ss;
-        ss << "/tmp/" << getpid() << "/";
+        boost::filesystem::path curr_dir(boost::filesystem::current_path());
+        ss << curr_dir.string() << "/" << getpid() << "/";
         agent_->oper_db()-> instance_manager()->loadbalancer_config_path_ = ss.str();
     }
 
@@ -321,7 +322,7 @@ protected:
 
 TEST_F(InstanceManagerTest, ExecTrue) {
     agent_->oper_db()->instance_manager()->Initialize(agent_->db(),
-            agent_->agent_signal(), "/bin/true", 1, 10);
+            agent_->agent_signal(), "/bin/true", "/bin/true", 1, 10);
     boost::uuids::uuid id = AddServiceInstance("exec-true");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -344,7 +345,7 @@ TEST_F(InstanceManagerTest, ExecTrue) {
 }
 
 TEST_F(InstanceManagerTest, ExecFalse) {
-    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/false", 1, 10);
+    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/false", "/bin/false", 1, 10);
     boost::uuids::uuid id = AddServiceInstance("exec-false");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -366,7 +367,7 @@ TEST_F(InstanceManagerTest, ExecFalse) {
 }
 
 TEST_F(InstanceManagerTest, Update) {
-    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", 1, 10);
+    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", "/bin/true", 1, 10);
     boost::uuids::uuid id = AddServiceInstance("exec-update");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -397,7 +398,7 @@ TEST_F(InstanceManagerTest, Update) {
 }
 
 TEST_F(InstanceManagerTest, UpdateProperties) {
-    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", 1, 10);
+    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", "/bin/true", 1, 10);
     boost::uuids::uuid id = AddServiceInstance("exec-update");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -437,7 +438,7 @@ TEST_F(InstanceManagerTest, UpdateProperties) {
 TEST_F(InstanceManagerTest, Timeout) {
 
     agent_->oper_db()->instance_manager()->Initialize(
-        agent_->db(), NULL, "/bin/true", 1, 1);
+        agent_->db(), NULL, "/bin/true", "/bin/true", 1, 1);
     boost::uuids::uuid id = AddServiceInstance("exec-timeout");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -459,7 +460,7 @@ TEST_F(InstanceManagerTest, Timeout) {
 }
 TEST_F(InstanceManagerTest, TaskQueue) {
     static const int kNumUpdate = 5;
-    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), NULL, "/bin/true", 10, 1);
+    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), NULL, "/bin/true", "/bin/true", 10, 1);
     boost::uuids::uuid id = AddServiceInstance("exec-queue");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -492,7 +493,7 @@ TEST_F(InstanceManagerTest, TaskQueue) {
 }
 
 TEST_F(InstanceManagerTest, Usable) {
-    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", 1, 10);
+    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", "/bin/true", 1, 10);
     boost::uuids::uuid id = AddServiceInstance("exec-usable");
     EXPECT_FALSE(id.is_nil());
     task_util::WaitForIdle();
@@ -526,7 +527,7 @@ TEST_F(InstanceManagerTest, Usable) {
 }
 
 TEST_F(InstanceManagerTest, LoadbalancerConfig) {
-    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", 1, 10);
+    agent_->oper_db()->instance_manager()->Initialize(agent_->db(), agent_->agent_signal(), "/bin/true", "/bin/true", 1, 10);
 
     boost::uuids::random_generator gen;
     std::string pool_name(UuidToString(gen()));
@@ -572,23 +573,33 @@ TEST_F(InstanceManagerTest, LoadbalancerConfig) {
 
 TEST_F(InstanceManagerTest, InstanceStaleCleanup) {
     agent_->oper_db()->instance_manager()->Initialize(agent_->db(),
-            agent_->agent_signal(), "/bin/true", 1, 10);
+            agent_->agent_signal(), "/bin/true", "/bin/true", 1, 10);
 
     boost::uuids::random_generator gen;
     std::string vm_uuid = UuidToString(gen());
     std::string lb_uuid = UuidToString(gen());
-    std::string store_path = "/tmp/lb/";
 
-    agent_->oper_db()->instance_manager()->SetNamespaceStorePath(store_path);
+    boost::filesystem::path curr_dir (boost::filesystem::current_path());
+    stringstream ss;
+    ss << curr_dir.string() << "/" << getpid() << "/";
+    string store_path = ss.str();
+
+    agent_->oper_db()->instance_manager()->SetNamespaceStorePath(store_path.c_str());
     store_path +=  ("vrouter-" + vm_uuid + ":" + lb_uuid);
     boost::system::error_code error;
     if (!boost::filesystem::exists(store_path, error)) {
         boost::filesystem::create_directories(store_path, error);
+        if (error) {
+            LOG(ERROR, "Error : " << error.message() << "in creating directory");
+        }
     }
     store_path  = loadbalancer_config_path() + lb_uuid;
 
     if (!boost::filesystem::exists(store_path, error)) {
         boost::filesystem::create_directories(store_path, error);
+        if (error) {
+            LOG(ERROR, "Error : " << error.message() << "in creating directory");
+        }
     }
     EXPECT_EQ(1, boost::filesystem::exists(store_path));
 
@@ -596,9 +607,10 @@ TEST_F(InstanceManagerTest, InstanceStaleCleanup) {
     task_util::WaitForIdle();
     EXPECT_EQ(0, boost::filesystem::exists(store_path));
 
-
-    store_path = "/tmp/lb/" + ("vrouter-" + vm_uuid + ":" + lb_uuid);
-    boost::filesystem::remove_all(store_path.c_str(), error);
+    boost::filesystem::remove_all(ss.str(), error);
+    if (error) {
+        LOG(ERROR, "Error : " << error.message() << "in removing directory");
+    }
 }
 
 

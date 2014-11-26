@@ -4,10 +4,19 @@
 
 #include "base/os.h"
 #include <sys/socket.h>
-#include <linux/netlink.h>
+
 #include <net/if.h>
+
+#ifdef __linux__
+#include <linux/netlink.h>
 #include <linux/if_tun.h>
 #include <linux/if_packet.h>
+#endif
+
+#ifdef __FreeBSD__
+#include <sys/sockio.h>
+#include <ifaddrs.h>
+#endif
 
 #include "testing/gunit.h"
 
@@ -229,7 +238,7 @@ static void CfgIntfSync(int id, const char *cfg_str, int vn, int vm,
                                                      intf_uuid, "");
     req.key.reset(key);
 
-    VmInterfaceConfigData *cfg_data = new VmInterfaceConfigData();
+    VmInterfaceConfigData *cfg_data = new VmInterfaceConfigData(NULL);
     InterfaceData *data = static_cast<InterfaceData *>(cfg_data);
     data->VmPortInit();
 
@@ -271,7 +280,7 @@ static void CfgIntfSync(int id, const char *cfg_str, int vn, int vm,
     VmInterfaceKey *key = new VmInterfaceKey(AgentKey::RESYNC, intf_uuid, "");
     req.key.reset(key);
 
-    VmInterfaceConfigData *cfg_data = new VmInterfaceConfigData();
+    VmInterfaceConfigData *cfg_data = new VmInterfaceConfigData(NULL);
     InterfaceData *data = static_cast<InterfaceData *>(cfg_data);
     data->VmPortInit();
 

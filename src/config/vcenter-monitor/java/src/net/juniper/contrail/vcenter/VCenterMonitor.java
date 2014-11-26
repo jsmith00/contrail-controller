@@ -395,7 +395,7 @@ class VCenterMonitorTask implements Runnable {
     public void run() {
         try {
             if (iteration == 0) {
-                // 30 sec timeout. Sync VN/VM/VMI/InstanceIp etc.
+                // 16 sec timeout. Sync VN/VM/VMI/InstanceIp etc.
                 syncVirtualNetworks();
 
                 // When syncVirtualNetwrorks is run the first time, it also does
@@ -407,7 +407,7 @@ class VCenterMonitorTask implements Runnable {
                 vncDB.vrouterAgentPeriodicConnectionCheck();
             }
             iteration++;
-            if (iteration == 16)
+            if (iteration == 8) // 16 sec for poll
                 iteration = 0;
         } catch (Exception e) {
             s_logger.error("Error while syncVirtualNetworks: " + e); 
@@ -450,7 +450,7 @@ public class VCenterMonitor {
     private static ScheduledExecutorService scheduledTaskExecutor = 
             Executors.newScheduledThreadPool(1);
     private static Logger s_logger = Logger.getLogger(VCenterMonitor.class);
-    private static String _configurationFile = "vcenter-plugin.properties";
+    private static String _configurationFile = "/etc/contrail/contrail-vcenter-plugin.conf";
     private static String _vcenterURL        = "https://10.84.24.111/sdk";
     private static String _vcenterUsername   = "admin";
     private static String _vcenterPassword   = "Contrail123!";

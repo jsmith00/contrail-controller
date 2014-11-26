@@ -3,18 +3,32 @@
 #
 # Copyright (c) 2014 Juniper Networks, Inc. All rights reserved.
 #
+import os
+
 Import('CfgmEnv')
 env = CfgmEnv.Clone()
 
-setup_sources = ['setup.py', 'MANIFEST.in', ]
-
+setup_sources = [
+           'setup.py',
+           'MANIFEST.in',
+           'run_tests.sh',
+           'requirements.txt',
+           'test-requirements.txt',
+           '.testr.conf',
+           'test',
+          ]
 
 setup_sources_rules = []
 for file in setup_sources:
     setup_sources_rules.append(
         env.Install(Dir('.'), "#controller/src/config/device-manager/" + file))
 
-local_sources = ['device_manager/__init__.py', 'device_manager/device_manager.py', ]
+local_sources = [
+    'device_manager/__init__.py',
+    'device_manager/device_manager.py',
+    'device_manager/db.py',
+    'device_manager/physical_router_config.py',
+]
 
 local_sources_rules = []
 for file in local_sources:
@@ -25,20 +39,20 @@ for file in local_sources:
 dm_introspect_pkg = env.SandeshGenPy('dm_introspect.sandesh',
                                        'device_manager/sandesh/', False)
 
+cd_cmd = 'cd ' + Dir('.').path + ' && '
 sdist_depends = []
 sdist_depends.extend(setup_sources_rules)
 sdist_depends.extend(local_sources_rules)
 sdist_depends.extend(dm_introspect_pkg)
-sdist_gen = env.Command('dist', 'setup.py', 'python setup.py sdist', chdir=1)
+sdist_gen = env.Command('dist/device_manager-0.1dev.tar.gz', 'setup.py', cd_cmd + 'python setup.py sdist')
 
 env.Depends(sdist_gen, sdist_depends)
 env.Default(sdist_gen)
 
 if 'install' in BUILD_TARGETS:
     install_cmd = env.Command(None, 'setup.py',
-                              'python setup.py install %s' %
-                              env['PYTHON_INSTALL_OPT'],
-                              chdir=1)
+                              cd_cmd + 'python setup.py install %s' %
+                              env['PYTHON_INSTALL_OPT'])
     env.Depends(install_cmd, sdist_depends)
     env.Alias('install', install_cmd)
 
@@ -48,3 +62,28 @@ env.Alias('install', env.InstallAs(env['INSTALL_INITD'] +
           '/contrail-device-manager', 'contrail-device-manager.initd.supervisord'))
 env.Alias('install', env.Install(env['INSTALL_CONF'] +
           '/supervisord_config_files', 'contrail-device-manager.ini'))
+
+buildspace_link = os.environ.get('CONTRAIL_REPO')
+if buildspace_link:
+    # in CI environment shebang limit exceeds for python
+    # in easy_install/pip, reach to it via symlink
+    top_path = buildspace_link + '/' + Dir('.').path
+    top_dir = Dir(top_path)
+else:
+    top_dir = Dir('.')
+
+test_cmd = env.Command('test.log', sdist_gen,
+                       'cd ' + Dir(top_dir).path + ' && python setup.py run_tests 2>&1 | tee test.log')
+
+test_depends = ['/config/common/dist/cfgm_common-0.1dev.tar.gz',
+                '/api-lib/dist/vnc_api-0.1dev.tar.gz',
+                '/discovery/client/dist/discoveryclient-0.1dev.tar.gz',
+                '/tools/sandesh/library/python/dist/sandesh-0.1dev.tar.gz',
+                '/sandesh/common/dist/sandesh-common-0.1dev.tar.gz',
+                '/config/api-server/dist/vnc_cfg_api_server-0.1dev.tar.gz',
+                '/config/schema-transformer/dist/schema_transformer-0.1dev.tar.gz',
+]
+env.Depends(test_cmd, [env['TOP']+x for x in test_depends])
+
+env.Alias('flaky-test', test_cmd)
+env.Alias('controller/src/config/device-manager:flaky-test', test_cmd)

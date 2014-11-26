@@ -49,6 +49,7 @@ CONFIG_VERSION = '1.0'
 
 import bottle
 from bottle import request
+request.MEMFILE_MAX = 1024000
 
 import vnc_cfg_types
 from vnc_cfg_ifmap import VncDbClient
@@ -206,7 +207,7 @@ class VncApiServer(VncApiServerGen):
     """
     This is the manager class co-ordinating all classes present in the package
     """
-    _INVALID_NAME_CHARS = set('<>&":')
+    _INVALID_NAME_CHARS = set(':')
 
     def __new__(cls, *args, **kwargs):
         obj = super(VncApiServer, cls).__new__(cls, *args, **kwargs)
@@ -578,9 +579,8 @@ class VncApiServer(VncApiServerGen):
                 bottle.abort(404, 'UUID ' + obj_uuid + ' not found')
             (read_ok, read_result) = self._db_conn.dbe_read(obj_type, request.json)
             if not read_ok:
-                (code, msg) = read_result
-                self.config_object_error(obj_uuid, None, obj_type, 'ref_update', msg)
-                bottle.abort(code, msg)
+                self.config_object_error(obj_uuid, None, obj_type, 'ref_update', read_result)
+                bottle.abort(404, read_result)
 
             obj_dict = read_result
             if operation == 'ADD':
@@ -1061,7 +1061,7 @@ class VncApiServer(VncApiServerGen):
         if obj_uuid:
             field_list = ['enable', 'description']
         else:
-            field_list = ['enable', 'description', 'user_visible']
+            field_list = ['enable', 'description', 'user_visible', 'creator']
 
         # Start from default and update from obj_dict
         req_id_perms = obj_dict['id_perms']
@@ -1341,7 +1341,7 @@ class VncApiServer(VncApiServerGen):
         # well-formed name checks
         if illegal_xml_chars_RE.search(fq_name[-1]):
             bottle.abort(400,
-                "Bad Request, name has xml reserved characters")
+                "Bad Request, name has illegal xml characters")
         if obj_type[:].replace('-','_') == 'route_target':
             invalid_chars = self._INVALID_NAME_CHARS - set(':')
         else:

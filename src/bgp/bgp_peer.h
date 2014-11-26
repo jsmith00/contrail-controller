@@ -100,6 +100,9 @@ public:
     virtual BgpServer *server() { return server_; }
     const BgpServer *server() const { return server_; }
 
+    const std::string peer_address_string() const {
+        return peer_key_.endpoint.address().to_string();
+    }
     const BgpPeerKey &peer_key() const { return peer_key_; }
     const std::string &peer_name() const { return peer_name_; }
     const std::string &peer_basename() const { return peer_basename_; }
@@ -147,7 +150,8 @@ public:
     const BgpNeighborConfig *config() const { return config_; }
 
     virtual void SetDataCollectionKey(BgpPeerInfo *peer_info) const;
-    void FillNeighborInfo(std::vector<BgpNeighborResp> &nbr_list) const;
+    void FillNeighborInfo(std::vector<BgpNeighborResp> *nbr_list,
+        bool summary) const;
 
     // thread-safe
     bool IsDeleted() const;

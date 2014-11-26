@@ -152,6 +152,7 @@ targetNamespace="http://www.contrailsystems.com/2012/VNC-CONFIG/0">
         <xsd:element name="src-port"    type="PortType" />
         <xsd:element name="dst-address" type="AddressType"/>
         <xsd:element name="dst-port"    type="PortType" />
+        <xsd:element name="ethertype"   type="EtherType" />
     </xsd:sequence>
 </xsd:complexType>
 
@@ -202,6 +203,12 @@ targetNamespace="http://www.contrailsystems.com/2012/VNC-CONFIG/0">
     </xsd:all>
 </xsd:complexType>
 
+<xsd:simpleType name="EtherType" default="IPv4">
+    <xsd:restriction base="xsd:string">
+        <xsd:enumeration value="IPv4"/>
+        <xsd:enumeration value="IPv6"/>
+    </xsd:restriction>
+</xsd:simpleType>
 
 <xsd:simpleType name="DirectionType">
     <xsd:restriction base="xsd:string">
@@ -216,6 +223,7 @@ targetNamespace="http://www.contrailsystems.com/2012/VNC-CONFIG/0">
         <xsd:element name="rule-uuid"        type="xsd:string"/>
         <xsd:element name="direction"        type="DirectionType"/>
         <xsd:element name="protocol"         type="ProtocolType"/>
+        <xsd:element name="ethertype"        type="EtherType"/>
         <xsd:element name="src-addresses"      type="AddressType"
                                              maxOccurs="unbounded"/>
         <xsd:element name="src-ports"         type="PortType"
@@ -463,6 +471,13 @@ targetNamespace="http://www.contrailsystems.com/2012/VNC-CONFIG/0">
     </xsd:all>
 </xsd:complexType> 
 
+<xsd:simpleType name="CreatorType">
+    <xsd:restriction base="xsd:string">
+        <xsd:enumeration value="vcenter-plugin"/>
+        <xsd:enumeration value="test"/>
+    </xsd:restriction>
+</xsd:simpleType>
+
 <xsd:complexType name="IdPermsType">
     <xsd:all>
         <xsd:element name="permissions"   type="PermType"/>
@@ -472,6 +487,7 @@ targetNamespace="http://www.contrailsystems.com/2012/VNC-CONFIG/0">
         <xsd:element name="last-modified" type="xsd:dateTime"/>
         <xsd:element name="description"   type="xsd:string"/>
         <xsd:element name="user-visible"  type="xsd:boolean" default="true"/>
+        <xsd:element name="creator"       type="CreatorType"/>
     </xsd:all>
 </xsd:complexType> 
 
@@ -1278,9 +1294,6 @@ targetNamespace="http://www.contrailsystems.com/2012/VNC-CONFIG/0">
 <!--#IFMAP-SEMANTICS-IDL 
      Link('virtual-machine-interface-route-table',
           'virtual-machine-interface', 'interface-route-table', ['ref']) -->
-<xsd:element name="interface-route-table-family" type="IpAddressFamilyType"/>
-<!--#IFMAP-SEMANTICS-IDL 
-     Property('interface-route-table-family', 'interface-route-table') -->
 <xsd:element name="interface-route-table-routes" type="RouteTableType"/>
 <!--#IFMAP-SEMANTICS-IDL 
      Property('interface-route-table-routes', 'interface-route-table') -->

@@ -50,6 +50,7 @@
         <xsd:element name='port' type='xsd:integer'/>
         <xsd:element name='hold-time' type='BgpHoldTime' default='90'/>
         <xsd:element name='address-families' type='AddressFamilies'/>
+	<xsd:element name='auth-key-chain' type='AuthenticationKeyChain'/>
     </xsd:sequence>
 </xsd:complexType>
 
@@ -92,6 +93,7 @@
 	 -->
         <xsd:element name='bgp-router' type='xsd:string'/>
 	<xsd:element name='address-families' type='AddressFamilies'/>
+	<xsd:element name='auth-key-chain' type='AuthenticationKeyChain'/>
 	<!-- Configuration items such as import and export policy -->
     </xsd:sequence>
 </xsd:complexType>
@@ -113,9 +115,33 @@
     </xsd:sequence>
 </xsd:complexType>
 
+<xsd:simpleType name="KeyType">
+    <xsd:restriction base='xsd:string'>
+        <xsd:enumeration value="md5"/>
+    </xsd:restriction>
+</xsd:simpleType>
+
+<xsd:complexType name="AuthenticationKeyItem">
+    <xsd:element name="key-id" type="xsd:string"/>
+    <xsd:element name="key-type" type="KeyType"/>
+    <xsd:element name="key" type="xsd:string"/>
+    <xsd:element name="start-time" type="xsd:dateTime"/>
+</xsd:complexType>
+
+<xsd:complexType name='AuthenticationKeyChain'>
+    <xsd:sequence>
+        <xsd:element name='auth-key-items' type='AuthenticationKeyItem'
+                     maxOccurs='unbounded'/>
+    </xsd:sequence>
+</xsd:complexType>
+
 <xsd:element name='service-chain-information' type='ServiceChainInfo'/>
 <!-- #IFMAP-SEMANTICS-IDL
      Property('service-chain-information', 'routing-instance') -->
+
+<xsd:element name="routing-instance-is-default" type="xsd:boolean" default="false"/>
+<!--#IFMAP-SEMANTICS-IDL
+     Property('routing-instance-is-default', 'routing-instance') -->
 
 <xsd:complexType name="ServiceChainInfo">
     <xsd:all>
