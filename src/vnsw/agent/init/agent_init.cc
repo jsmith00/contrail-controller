@@ -69,13 +69,14 @@ int AgentInit::Start() {
         TaskScheduler::Initialize();
     }
     agent_->set_task_scheduler(TaskScheduler::GetInstance());
+
+    // Copy tunable parameters into agent_
+    agent_->CopyConfig(agent_param_);
+
     string module_name = ModuleName();
     agent_->set_discovery_client_name(module_name);
     agent_->set_agent_name(AgentName());
     agent_->set_instance_id(InstanceId());
-
-    // Copy tunable parameters into agent_
-    agent_->CopyConfig(agent_param_);
 
     LoggingInit(agent_param_->log_file(), agent_param_->log_file_size(),
                 agent_param_->log_files_count(), agent_param_->use_syslog(),
@@ -88,6 +89,8 @@ int AgentInit::Start() {
         return ret;
     }
 
+    agent_param_->PostValidateLogConfig();
+
     int task_id = agent_->task_scheduler()->GetTaskId("db::DBTable");
     trigger_.reset(new TaskTrigger(boost::bind(&AgentInit::InitBase, this),
                                    task_id, 0));
@@ -99,12 +102,12 @@ int AgentInit::Start() {
 bool AgentInit::InitBase() {
     FactoryInit();
     InitLoggingBase();
-    InitCollectorBase();
     CreatePeersBase();
     CreateModulesBase();
     CreateDBTablesBase();
     RegisterDBClientsBase();
     InitModulesBase();
+    InitCollectorBase();
     CreateVrfBase();
     CreateNextHopsBase();
     InitDiscoveryBase();
@@ -150,8 +153,8 @@ void AgentInit::CreateModulesBase() {
 
     if (enable_controller_) {
         controller_.reset(new VNController(agent()));
+        agent_->set_controller(controller_.get());
     }
-    agent_->set_controller(controller_.get());
 
     CreateModules();
 }
@@ -210,7 +213,6 @@ void AgentInit::CreateVrfBase() {
 
 void AgentInit::CreateNextHopsBase() {
     DiscardNH::Create();
-    ResolveNH::Create();
 
     DiscardNHKey key;
     NextHop *nh = static_cast<NextHop *>

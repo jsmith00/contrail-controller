@@ -61,6 +61,24 @@ void DiscoveryAgentClient::DiscoverController() {
     }    
 }
 
+void DiscoveryAgentClient::ReDiscoverController() {
+
+    DiscoveryServiceClient *ds_client =
+        agent_cfg_->agent()->discovery_service_client();
+    if (ds_client) {
+
+        int xs_instances = 
+            agent_cfg_->agent()->discovery_xmpp_server_instances();
+        if ((xs_instances < 0) || (xs_instances > 2)) {
+            xs_instances = 2;
+        }
+
+        ds_client->Subscribe(
+            g_vns_constants.XMPP_SERVER_DISCOVERY_SERVICE_NAME, xs_instances);
+    }
+}
+
+
 void DiscoveryAgentClient::DiscoverDNS() {
     
     DiscoveryServiceClient *ds_client = 
@@ -79,6 +97,24 @@ void DiscoveryAgentClient::DiscoverDNS() {
                         this, _1)); 
     }    
 }
+
+void DiscoveryAgentClient::ReDiscoverDNS() {
+    
+    DiscoveryServiceClient *ds_client = 
+        agent_cfg_->agent()->discovery_service_client();
+    if (ds_client) {
+
+        int dns_instances = 
+            agent_cfg_->agent()->discovery_xmpp_server_instances();
+        if ((dns_instances < 0) || (dns_instances > 2)) {
+            dns_instances = 2;
+        }
+
+        ds_client->Subscribe(
+            g_vns_constants.DNS_SERVER_DISCOVERY_SERVICE_NAME, dns_instances);
+    }    
+}
+
 
 
 void DiscoveryAgentClient::DiscoverySubscribeDNSHandler(std::vector<DSResponse> resp) {

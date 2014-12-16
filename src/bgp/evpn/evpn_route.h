@@ -69,10 +69,10 @@ public:
     bool operator==(const EvpnPrefix &rhs) const { return CompareTo(rhs) == 0; }
 
     uint8_t type() const { return type_; }
-    RouteDistinguisher route_distinguisher() const { return rd_; }
-    EthernetSegmentId esi() const { return esi_; }
+    const RouteDistinguisher &route_distinguisher() const { return rd_; }
+    const EthernetSegmentId &esi() const { return esi_; }
     uint32_t tag() const { return tag_; }
-    MacAddress mac_addr() const { return mac_addr_; }
+    const MacAddress &mac_addr() const { return mac_addr_; }
     Address::Family family() const { return family_; }
     IpAddress ip_address() const { return ip_address_; }
     uint8_t ip_address_length() const;
