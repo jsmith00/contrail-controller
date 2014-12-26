@@ -28,11 +28,14 @@ bool AgentDBEntry::IsActive() const {
     return !IsDeleted();
 }
 
-bool AgentDBEntry::CanDelete(DBRequest *req) {
-    return true;
+void AgentDBEntry::PostAdd() {
 }
 
-void AgentDBEntry::PostAdd() {
+void AgentDBTable::NotifyEntry(DBEntryBase *e) {
+    CHECK_CONCURRENCY("db::DBTable");
+    DBTablePartBase *tpart =
+        static_cast<DBTablePartition *>(GetTablePartition(e));
+    tpart->Notify(e);
 }
 
 AgentDBEntry *AgentDBTable::FindActiveEntry(const DBEntry *key) {
@@ -95,12 +98,6 @@ void AgentDBTable::Input(DBTablePartition *partition, DBClient *client,
     AgentKey *key = static_cast<AgentKey *>(req->key.get());
 
     if (key->sub_op_ == AgentKey::ADD_DEL_CHANGE) {
-        if (req->oper == DBRequest::DB_ENTRY_DELETE) {
-            AgentDBEntry *entry =
-                static_cast<AgentDBEntry *>(partition->Find(key));
-            if (entry && !entry->CanDelete(req))
-                return;
-        }
         DBTable::Input(partition, client, req);
         return;
     }
@@ -145,7 +142,6 @@ void AgentDBTable::Process(DBRequest &req) {
         static_cast<DBTablePartition *>(GetTablePartition(req.key.get()));
     tpart->Process(NULL, &req);
 }
-
 
 static bool FlushNotify(DBTablePartBase *partition, DBEntryBase *e) {
     if (e->IsDeleted()) {

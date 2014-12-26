@@ -115,6 +115,10 @@ void BgpXmppMessage::Start(const RibOutAttr *roattr, const BgpRoute *route) {
     if (is_reachable_) {
         const BgpAttr *attr = roattr->attr();
         ProcessExtCommunity(attr->ext_community());
+        if (virtual_network_.empty() && roattr->vrf_originated()) {
+            virtual_network_ =
+                table_->routing_instance()->GetVirtualNetworkName();
+        }
     }
 
     stringstream ss;
@@ -261,6 +265,13 @@ void BgpXmppMessage::AddEnetReach(const BgpRoute *route, const RibOutAttr *roatt
     item.entry.nlri.address = evpn_prefix.ip_address().to_string() + "/" +
         integerToString(evpn_prefix.ip_address_length());
     item.entry.virtual_network = GetVirtualNetwork(route);
+    item.entry.local_preference = roattr->attr()->local_pref();
+    item.entry.sequence_number = sequence_number_;
+
+    for (std::vector<int>::iterator it = security_group_list_.begin();
+         it !=  security_group_list_.end(); ++it) {
+        item.entry.security_group_list.security_group.push_back(*it);
+    }
 
     const BgpOList *olist = roattr->attr()->olist().get();
     assert((olist == NULL) != roattr->nexthop_list().empty());
@@ -380,10 +391,6 @@ string BgpXmppMessage::GetVirtualNetwork(const BgpRoute *route) const {
         return "unresolved";
     if (!virtual_network_.empty())
         return virtual_network_;
-
-    const BgpPath *path = route->BestPath();
-    if (path && path->IsVrfOriginated())
-        return table_->routing_instance()->GetVirtualNetworkName();
     return "unresolved";
 }
 

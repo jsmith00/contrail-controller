@@ -108,7 +108,6 @@ public:
     void ClearRefState() const;
     bool IsActive() const;
 
-    virtual bool CanDelete(DBRequest *req);
     virtual void PostAdd();
     virtual bool DBEntrySandesh(Sandesh *resp, std::string &name) const = 0;
 private:
@@ -155,6 +154,7 @@ public:
         return new AgentDBTablePartition(this, index);
     };
     virtual void OnZeroRefcount(AgentDBEntry *e) {};
+    virtual void NotifyEntry(DBEntryBase *entry);
     // Dummy notification
     void Notify(DBTablePartBase *partition, DBEntryBase *entry) {
     };
