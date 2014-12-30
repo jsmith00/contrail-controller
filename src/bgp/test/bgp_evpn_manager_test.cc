@@ -2,6 +2,8 @@
  * Copyright (c) 2013 Juniper Networks, Inc. All rights reserved.
  */
 
+#include <boost/foreach.hpp>
+
 #include "base/task_annotations.h"
 #include "base/util.h"
 #include "base/test/task_test_util.h"
@@ -76,6 +78,9 @@ public:
         return NULL;
     }
     virtual IPeerDebugStats *peer_stats() {
+        return NULL;
+    }
+    virtual const IPeerDebugStats *peer_stats() const {
         return NULL;
     }
     virtual bool IsReady() const {

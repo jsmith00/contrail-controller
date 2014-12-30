@@ -637,7 +637,7 @@ TEST_F(UveVnUveTest, FipCount) {
     client->Reset();
     AddVn("default-project:vn2", 2);
     client->WaitForIdle();
-    EXPECT_TRUE(client->VnNotifyWait(1));
+    EXPECT_TRUE(client->VnNotifyWait(2));
     AddVrf("default-project:vn2:vn2");
     client->WaitForIdle();
     EXPECT_TRUE(client->VrfNotifyWait(1));
@@ -939,9 +939,8 @@ TEST_F(UveVnUveTest, VnThroughput) {
     EXPECT_EQ((size + 30), Agent::GetInstance()->interface_config_table()->
                                                  Size());
 
-    AgentUve *u = static_cast<AgentUve *>(Agent::GetInstance()->uve());
     AgentStatsCollectorTest *collector = static_cast<AgentStatsCollectorTest *>
-        (u->agent_stats_collector());
+        (Agent::GetInstance()->stats_collector());
     collector->Run();
     client->WaitForIdle();
     for (int i = 0; i < 30; i++) {

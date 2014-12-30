@@ -230,7 +230,8 @@ void Agent::CopyConfig(AgentParam *params) {
     simulate_evpn_tor_ = params->simulate_evpn_tor();
     debug_ = params_->debug();
     test_mode_ = params_->test_mode();
-    tsn_enabled_ = params_->isTsnEnabled();
+    tsn_enabled_ = params_->isTsnAgent();
+    tor_agent_enabled_ = params_->isTorAgent();
 }
 
 DiscoveryAgentClient *Agent::discovery_client() const {
@@ -375,7 +376,8 @@ Agent::Agent() :
     ksync_sync_mode_(true), mgmt_ip_(""),
     vxlan_network_identifier_mode_(AUTOMATIC), headless_agent_mode_(false), 
     connection_state_(NULL), debug_(false), test_mode_(false),
-    init_done_(false), simulate_evpn_tor_(false), tsn_enabled_(false) {
+    init_done_(false), simulate_evpn_tor_(false), tsn_enabled_(false),
+    tor_agent_enabled_(false) {
 
     assert(singleton_ == NULL);
     singleton_ = this;
@@ -448,6 +450,22 @@ AgentUveBase *Agent::uve() const {
 
 void Agent::set_uve(AgentUveBase *uve) {
     uve_ = uve;
+}
+
+AgentStatsCollector *Agent::stats_collector() const {
+    return stats_collector_;
+}
+
+void Agent::set_stats_collector(AgentStatsCollector *asc) {
+    stats_collector_ = asc;
+}
+
+FlowStatsCollector *Agent::flow_stats_collector() const {
+    return flow_stats_collector_;
+}
+
+void Agent::set_flow_stats_collector(FlowStatsCollector *fsc) {
+    flow_stats_collector_ = fsc;
 }
 
 PktModule *Agent::pkt() const {

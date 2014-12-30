@@ -11,6 +11,7 @@
 #include "db/db_entry.h"
 #include "db/db_table.h"
 #include "ifmap/ifmap_node.h"
+#include "net/address_util.h"
 
 #include <cfg/cfg_init.h>
 #include <cfg/cfg_interface.h>
@@ -84,7 +85,7 @@ InetInterfaceData::InetInterfaceData(InetInterface::SubType sub_type,
                                      const Ip4Address &gw,
                                      const std::string &xconnect,
                                      const std::string vn_name) :
-    InterfaceData(NULL), sub_type_(sub_type), ip_addr_(addr), plen_(plen),
+    InterfaceData(NULL, NULL), sub_type_(sub_type), ip_addr_(addr), plen_(plen),
     gw_(gw), xconnect_(xconnect), vn_name_(vn_name) {
     InetInit(vrf_name);
 }

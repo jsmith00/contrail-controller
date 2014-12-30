@@ -8,6 +8,7 @@
 #include <cmn/agent_cmn.h>
 #include <cmn/agent.h>
 #include <oper/agent_types.h>
+#include <oper/oper_db.h>
 #include <oper/oper_dhcp_options.h>
 
 using namespace boost::uuids;
@@ -38,15 +39,8 @@ struct VnIpam {
     VnIpam(const std::string& ip, uint32_t len, const std::string& gw,
            const std::string& dns, bool dhcp, std::string &name,
            const std::vector<autogen::DhcpOptionType> &dhcp_options,
-           const std::vector<autogen::RouteType> &host_routes)
-        : plen(len), installed(false), dhcp_enable(dhcp), ipam_name(name) {
-        boost::system::error_code ec;
-        ip_prefix = IpAddress::from_string(ip, ec);
-        default_gw = IpAddress::from_string(gw, ec);
-        dns_server = IpAddress::from_string(dns, ec);
-        oper_dhcp_options.set_options(dhcp_options);
-        oper_dhcp_options.set_host_routes(host_routes);
-    }
+           const std::vector<autogen::RouteType> &host_routes);
+
     bool IsV4() const {
         return ip_prefix.is_v4();
     }
@@ -59,36 +53,11 @@ struct VnIpam {
 
         return (plen < rhs.plen);
     }
-    Ip4Address GetBroadcastAddress() const {
-        if (ip_prefix.is_v4()) {
-            Ip4Address broadcast(ip_prefix.to_v4().to_ulong() | 
-                    ~(0xFFFFFFFF << (32 - plen)));
-            return broadcast;
-        } 
-        return Ip4Address(0);
-    }
-    Ip4Address GetSubnetAddress() const {
-        if (ip_prefix.is_v4()) {
-            return Address::GetIp4SubnetAddress(ip_prefix.to_v4(), plen);
-        }
-        return Ip4Address(0);
-    }
-    Ip6Address GetV6SubnetAddress() const {
-        if (ip_prefix.is_v6()) {
-            return Address::GetIp6SubnetAddress(ip_prefix.to_v6(), plen);
-        }
-        return Ip6Address();
-    }
+    Ip4Address GetBroadcastAddress() const;
+    Ip4Address GetSubnetAddress() const;
+    Ip6Address GetV6SubnetAddress() const;
 
-    bool IsSubnetMember(const IpAddress &ip) const {
-        if (ip_prefix.is_v4() && ip.is_v4()) {
-            return ((ip_prefix.to_v4().to_ulong() | ~(0xFFFFFFFF << (32 - plen))) == 
-                 (ip.to_v4().to_ulong() | ~(0xFFFFFFFF << (32 - plen))));
-        } else if (ip_prefix.is_v6() && ip.is_v6()) {
-            return IsIp6SubnetMember(ip.to_v6(), ip_prefix.to_v6(), plen);
-        }
-        return false;
-    }
+    bool IsSubnetMember(const IpAddress &ip) const;
 };
 
 // Per IPAM data of the VN
@@ -103,14 +72,14 @@ struct VnIpamLinkData {
     }
 };
 
-struct VnKey : public AgentKey {
-    VnKey(uuid id) : AgentKey(), uuid_(id) {} ;
-    virtual ~VnKey() { };
+struct VnKey : public AgentOperDBKey {
+    VnKey(const boost::uuids::uuid &id) : AgentOperDBKey(), uuid_(id) { }
+    virtual ~VnKey() { }
 
-    uuid uuid_;
+    boost::uuids::uuid uuid_;
 };
 
-struct VnData : public AgentData {
+struct VnData : public AgentOperDBData {
     typedef std::map<std::string, VnIpamLinkData> VnIpamDataMap;
     typedef std::pair<std::string, VnIpamLinkData> VnIpamDataPair;
 
@@ -119,13 +88,13 @@ struct VnData : public AgentData {
            const std::vector<VnIpam> &ipam, const VnIpamDataMap &vn_ipam_data,
            int vxlan_id, int vnid, bool layer2_forwarding,
            bool layer3_forwarding, bool admin_state) :
-                AgentData(), name_(name), vrf_name_(vrf_name), acl_id_(acl_id),
-                mirror_acl_id_(mirror_acl_id), mirror_cfg_acl_id_(mc_acl_id),
-                ipam_(ipam), vn_ipam_data_(vn_ipam_data), vxlan_id_(vxlan_id),
-                vnid_(vnid), layer2_forwarding_(layer2_forwarding), 
-                layer3_forwarding_(layer3_forwarding), admin_state_(admin_state) {
+        AgentOperDBData(NULL, NULL), name_(name), vrf_name_(vrf_name),
+        acl_id_(acl_id), mirror_acl_id_(mirror_acl_id),
+        mirror_cfg_acl_id_(mc_acl_id), ipam_(ipam), vn_ipam_data_(vn_ipam_data),
+        vxlan_id_(vxlan_id), vnid_(vnid), layer2_forwarding_(layer2_forwarding),
+        layer3_forwarding_(layer3_forwarding), admin_state_(admin_state) {
     };
-    virtual ~VnData() { };
+    virtual ~VnData() { }
 
     string name_;
     string vrf_name_;
@@ -141,11 +110,13 @@ struct VnData : public AgentData {
     bool admin_state_;
 };
 
-class VnEntry : AgentRefCount<VnEntry>, public AgentDBEntry {
+class VnEntry : AgentRefCount<VnEntry>, public AgentOperDBEntry {
 public:
-    VnEntry(uuid id) : uuid_(id), vxlan_id_(0), vnid_(0), layer2_forwarding_(true), 
-    layer3_forwarding_(true), admin_state_(true), table_label_(0) { }
-    virtual ~VnEntry() { };
+    VnEntry(const boost::uuids::uuid &id) :
+        AgentOperDBEntry(), uuid_(id), vxlan_id_(0), vnid_(0),
+        layer2_forwarding_(true), layer3_forwarding_(true), admin_state_(true),
+        table_label_(0) { }
+    virtual ~VnEntry() { }
 
     virtual bool IsLess(const DBEntry &rhs) const;
     virtual KeyPtr GetDBRequestKey() const;
@@ -218,9 +189,9 @@ private:
     DISALLOW_COPY_AND_ASSIGN(VnEntry);
 };
 
-class VnTable : public AgentDBTable {
+class VnTable : public AgentOperDBTable {
 public:
-    VnTable(DB *db, const std::string &name) : AgentDBTable(db, name),
+    VnTable(DB *db, const std::string &name) : AgentOperDBTable(db, name),
         walkid_(DBTableWalker::kInvalidWalkerId) { }
     virtual ~VnTable() { }
 
@@ -228,15 +199,16 @@ public:
     virtual size_t Hash(const DBEntry *entry) const {return 0;};
     virtual size_t  Hash(const DBRequestKey *key) const {return 0;};
 
-    virtual DBEntry *Add(const DBRequest *req);
-    virtual bool OnChange(DBEntry *entry, const DBRequest *req);
-    virtual bool Delete(DBEntry *entry, const DBRequest *req);
-    virtual bool Resync(DBEntry *entry, DBRequest *req); 
+    virtual DBEntry *OperDBAdd(const DBRequest *req);
+    virtual bool OperDBOnChange(DBEntry *entry, const DBRequest *req);
+    virtual bool OperDBDelete(DBEntry *entry, const DBRequest *req);
+    virtual bool OperDBResync(DBEntry *entry, const DBRequest *req); 
 
     virtual bool IFNodeToReq(IFMapNode *node, DBRequest &req);
 
     static DBTableBase *CreateTable(DB *db, const std::string &name);
     static VnTable *GetInstance() {return vn_table_;};
+    void RegisterDBClients(IFMapDependencyManager *dep);
 
     void AddVn(const uuid &vn_uuid, const string &name, const uuid &acl_id,
                const string &vrf_name, const std::vector<VnIpam> &ipam,

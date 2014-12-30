@@ -129,8 +129,7 @@ protected:
 
     void DeleteRoute(const Peer *peer, const std::string &vrf_name,
                      MacAddress &remote_vm_mac) {
-        Layer2AgentRouteTable::DeleteReq(peer, vrf_name_,
-            remote_vm_mac, 0, NULL);
+        Layer2AgentRouteTable::DeleteReq(peer, vrf_name_, remote_vm_mac, 0);
         client->WaitForIdle();
         while (L2RouteFind(vrf_name, remote_vm_mac) == true) {
             client->WaitForIdle();
@@ -544,7 +543,6 @@ TEST_F(RouteTest, vxlan_network_id_change_for_non_l2_interface) {
     client->WaitForIdle();
 
     EXPECT_TRUE(VmPortActive(input, 0));
-    InetUnicastRouteEntry *rt1 = RouteGet(vrf_name_, local_vm_ip_, 32);
     WAIT_FOR(100, 1000, (RouteGet(vrf_name_, local_vm_ip_, 32) != NULL));
     WAIT_FOR(100, 1000, (L2RouteGet(vrf_name_, local_vm_mac_) != NULL));
 
@@ -572,7 +570,7 @@ TEST_F(RouteTest, Enqueue_l2_route_add_on_deleted_vrf) {
     ComponentNHKeyList component_nh_key_list;
     Layer2AgentRouteTable::AddRemoteVmRouteReq(agent_->local_vm_peer(),
                                                vrf_name_, local_vm_mac_,
-                                               local_vm_ip_, 0, 32, NULL);
+                                               local_vm_ip_, 0, NULL);
 
     vrf_ref = NULL;
     TaskScheduler::GetInstance()->Start();
@@ -593,7 +591,7 @@ TEST_F(RouteTest, Enqueue_l2_route_del_on_deleted_vrf) {
     client->WaitForIdle();
     TaskScheduler::GetInstance()->Stop();
     Layer2AgentRouteTable::DeleteReq(agent_->local_vm_peer(), vrf_name_,
-                                     local_vm_mac_, 0, NULL);
+                                     local_vm_mac_, 0);
     vrf_ref = NULL;
     TaskScheduler::GetInstance()->Start();
     client->WaitForIdle();

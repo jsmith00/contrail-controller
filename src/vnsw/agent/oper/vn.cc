@@ -27,12 +27,62 @@
 #include <oper/agent_sandesh.h>
 #include <oper/oper_dhcp_options.h>
 #include <filter/acl.h>
+#include "net/address_util.h"
 
 using namespace autogen;
 using namespace std;
 using namespace boost;
+using boost::assign::map_list_of;
+using boost::assign::list_of;
 
 VnTable *VnTable::vn_table_;
+
+VnIpam::VnIpam(const std::string& ip, uint32_t len, const std::string& gw,
+               const std::string& dns, bool dhcp, std::string &name,
+               const std::vector<autogen::DhcpOptionType> &dhcp_options,
+               const std::vector<autogen::RouteType> &host_routes)
+        : plen(len), installed(false), dhcp_enable(dhcp), ipam_name(name) {
+    boost::system::error_code ec;
+    ip_prefix = IpAddress::from_string(ip, ec);
+    default_gw = IpAddress::from_string(gw, ec);
+    dns_server = IpAddress::from_string(dns, ec);
+    oper_dhcp_options.set_options(dhcp_options);
+    oper_dhcp_options.set_host_routes(host_routes);
+}
+
+Ip4Address VnIpam::GetBroadcastAddress() const {
+    if (ip_prefix.is_v4()) {
+        Ip4Address broadcast(ip_prefix.to_v4().to_ulong() | 
+                             ~(0xFFFFFFFF << (32 - plen)));
+        return broadcast;
+    } 
+    return Ip4Address(0);
+}
+
+Ip4Address VnIpam::GetSubnetAddress() const {
+    if (ip_prefix.is_v4()) {
+        return Address::GetIp4SubnetAddress(ip_prefix.to_v4(), plen);
+    }
+    return Ip4Address(0);
+}
+
+Ip6Address VnIpam::GetV6SubnetAddress() const {
+    if (ip_prefix.is_v6()) {
+        return Address::GetIp6SubnetAddress(ip_prefix.to_v6(), plen);
+    }
+    return Ip6Address();
+}
+
+bool VnIpam::IsSubnetMember(const IpAddress &ip) const {
+    if (ip_prefix.is_v4() && ip.is_v4()) {
+        return ((ip_prefix.to_v4().to_ulong() |
+                 ~(0xFFFFFFFF << (32 - plen))) == 
+                (ip.to_v4().to_ulong() | ~(0xFFFFFFFF << (32 - plen))));
+    } else if (ip_prefix.is_v6() && ip.is_v6()) {
+        return IsIp6SubnetMember(ip.to_v6(), ip_prefix.to_v6(), plen);
+    }
+    return false;
+}
 
 bool VnEntry::IsLess(const DBEntry &rhs) const {
     const VnEntry &a = static_cast<const VnEntry &>(rhs);
@@ -233,7 +283,7 @@ bool VnEntry::Resync() {
     return VxLanNetworkIdentifierChanged();
 }
 
-bool VnTable::Resync(DBEntry *entry, DBRequest *req) {
+bool VnTable::OperDBResync(DBEntry *entry, const DBRequest *req) {
     VnEntry *vn = static_cast<VnEntry *>(entry);
     bool ret = vn->Resync();
     return ret;
@@ -276,7 +326,7 @@ std::auto_ptr<DBEntry> VnTable::AllocEntry(const DBRequestKey *k) const {
     return std::auto_ptr<DBEntry>(static_cast<DBEntry *>(vn));
 }
 
-DBEntry *VnTable::Add(const DBRequest *req) {
+DBEntry *VnTable::OperDBAdd(const DBRequest *req) {
     VnKey *key = static_cast<VnKey *>(req->key.get());
     VnData *data = static_cast<VnData *>(req->data.get());
     VnEntry *vn = new VnEntry(key->uuid_);
@@ -287,7 +337,7 @@ DBEntry *VnTable::Add(const DBRequest *req) {
     return vn;
 }
 
-bool VnTable::OnChange(DBEntry *entry, const DBRequest *req) {
+bool VnTable::OperDBOnChange(DBEntry *entry, const DBRequest *req) {
     bool ret = ChangeHandler(entry, req);
     VnEntry *vn = static_cast<VnEntry *>(entry);
     vn->SendObjectLog(AgentLogEvent::CHANGE);
@@ -368,7 +418,7 @@ bool VnTable::ChangeHandler(DBEntry *entry, const DBRequest *req) {
     return ret;
 }
 
-bool VnTable::Delete(DBEntry *entry, const DBRequest *req) {
+bool VnTable::OperDBDelete(DBEntry *entry, const DBRequest *req) {
     VnEntry *vn = static_cast<VnEntry *>(entry);
     DeleteAllIpamRoutes(vn);
     vn->SendObjectLog(AgentLogEvent::DELETE);
@@ -385,6 +435,21 @@ DBTableBase *VnTable::CreateTable(DB *db, const std::string &name) {
     vn_table_->Init();
     return vn_table_;
 };
+
+void VnTable::RegisterDBClients(IFMapDependencyManager *dep) {
+    typedef IFMapDependencyTracker::PropagateList PropagateList;
+    typedef IFMapDependencyTracker::ReactionMap ReactionMap;
+
+    ReactionMap react_vn = map_list_of<string, PropagateList>
+            (("self"),
+             list_of("virtual-network-virtual-machine-interface")
+                    ("virtual-machine-interface-virtual-network"))
+            ("virtual-network-network-ipam",
+             list_of("virtual-machine-interface-virtual-network"));
+    dep->RegisterReactionMap("virtual-network", react_vn);
+    dep->Register("virtual-network",
+                  boost::bind(&AgentOperDBTable::ConfigEventHandler, this, _1));
+}
 
 /*
  * IsVRFServiceChainingInstance
@@ -553,6 +618,7 @@ bool VnTable::IFNodeToReq(IFMapNode *node, DBRequest &req) {
                           mirror_cfg_acl_uuid, vn_ipam, vn_ipam_data,
                           vxlan_id, vnid, layer2_forwarding, layer3_forwarding,
                           id_perms.enable);
+        data->SetIFMapNode(agent(), node);
     }
 
     req.key.reset(key);

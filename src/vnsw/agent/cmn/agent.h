@@ -30,6 +30,8 @@ class OperDB;
 class AgentRoute;
 class TaskScheduler;
 class AgentInit;
+class AgentStatsCollector;
+class FlowStatsCollector;
 
 class Interface;
 typedef boost::intrusive_ptr<Interface> InterfaceRef;
@@ -645,6 +647,12 @@ public:
     AgentUveBase *uve() const;
     void set_uve(AgentUveBase *uve);
 
+    AgentStatsCollector *stats_collector() const;
+    void set_stats_collector(AgentStatsCollector *asc);
+
+    FlowStatsCollector *flow_stats_collector() const;
+    void set_flow_stats_collector(FlowStatsCollector *fsc);
+
     PktModule *pkt() const;
     void set_pkt(PktModule *pkt);
 
@@ -709,6 +717,8 @@ public:
 
     bool tsn_enabled() const {return tsn_enabled_;}
     void set_tsn_enabled(bool val) {tsn_enabled_ = val;}
+    bool tor_agent_enabled() const {return tor_agent_enabled_;}
+    void set_tor_agent_enabled(bool val) {tor_agent_enabled_ = val;}
 
     IFMapAgentParser *ifmap_parser() const {return ifmap_parser_;}
     void set_ifmap_parser(IFMapAgentParser *parser) {
@@ -764,6 +774,8 @@ private:
     AgentStats *stats_;
     KSync *ksync_;
     AgentUveBase *uve_;
+    AgentStatsCollector *stats_collector_;
+    FlowStatsCollector *flow_stats_collector_;
     PktModule *pkt_;
     ServicesModule *services_;
     VirtualGateway *vgw_;
@@ -886,6 +898,7 @@ private:
     bool init_done_;
     bool simulate_evpn_tor_;
     bool tsn_enabled_;
+    bool tor_agent_enabled_;
 
     // Flow information
     uint32_t flow_table_size_;

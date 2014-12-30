@@ -11,6 +11,7 @@
 #include "db/db_entry.h"
 #include "db/db_table.h"
 #include "ifmap/ifmap_node.h"
+#include "net/address_util.h"
 
 #include <cfg/cfg_init.h>
 #include <cfg/cfg_interface.h>
@@ -57,7 +58,7 @@ VmInterface::VmInterface(const boost::uuids::uuid &uuid) :
     sg_list_(), floating_ip_list_(), service_vlan_list_(), static_route_list_(),
     allowed_address_pair_list_(), vrf_assign_rule_list_(),
     vrf_assign_acl_(NULL), vm_ip_gw_addr_(0), vm_ip6_gw_addr_(),
-    sub_type_(VmInterface::NONE), configurer_(0), ifmap_node_(NULL),
+    sub_type_(VmInterface::NONE), configurer_(0),
     subnet_(0), subnet_plen_(0) {
     ipv4_active_ = false;
     ipv6_active_ = false;
@@ -84,7 +85,7 @@ VmInterface::VmInterface(const boost::uuids::uuid &uuid,
     sg_list_(), floating_ip_list_(), service_vlan_list_(), static_route_list_(),
     allowed_address_pair_list_(), vrf_assign_rule_list_(),
     vrf_assign_acl_(NULL), sub_type_(VmInterface::NONE), configurer_(0),
-    ifmap_node_(NULL), subnet_(0), subnet_plen_(0) {
+    subnet_(0), subnet_plen_(0) {
     ipv4_active_ = false;
     ipv6_active_ = false;
     l2_active_ = false;
@@ -505,11 +506,11 @@ static void ReadDhcpEnable(Agent *agent, VmInterfaceConfigData *data,
 //TBD Use link instead of device_owner
 VmInterface::SubType GetVmInterfaceSubType(Agent *agent,
                                            const std::string &device_owner) {
-    if (device_owner.compare("compute:nova") == 0 || agent->test_mode() ||
-        agent->tsn_enabled() == false)
-        return VmInterface::NOVA;
-    else
+    if (agent->tsn_enabled() || agent->tor_agent_enabled())
         return VmInterface::TOR;
+
+    // if (device_owner.compare("compute:nova") == 0 || agent->test_mode())
+    return VmInterface::NOVA;
 }
 
 void VmInterface::SetConfigurer(VmInterface::Configurer type) {
@@ -543,7 +544,7 @@ bool InterfaceTable::VmiIFNodeToReq(IFMapNode *node, DBRequest &req) {
         if (interface_sub_type == VmInterface::NOVA) {
             req.oper = DBRequest::DB_ENTRY_ADD_CHANGE;
             req.key.reset(new VmInterfaceKey(AgentKey::RESYNC, u, ""));
-            req.data.reset(new VmInterfaceConfigData(NULL));
+            req.data.reset(new VmInterfaceConfigData(NULL, NULL));
             return true;
         } else {
             VmInterface::Delete(this, u, VmInterface::CONFIG);
@@ -566,8 +567,8 @@ bool InterfaceTable::VmiIFNodeToReq(IFMapNode *node, DBRequest &req) {
                                  cfg->display_name());
     }
 
-    VmInterfaceConfigData *data = new VmInterfaceConfigData(NULL);
-    data->ifmap_node_ = node;
+    VmInterfaceConfigData *data = new VmInterfaceConfigData(NULL, NULL);
+    data->SetIFMapNode(agent(), node);
     //Extract the local preference
     if (cfg->IsPropertySet(VirtualMachineInterface::PROPERTIES)) {
         autogen::VirtualMachineInterfacePropertiesType prop = cfg->properties();
@@ -1104,10 +1105,8 @@ bool VmInterfaceConfigData::OnDelete(const InterfaceTable *table,
         return true;
 
     vmi->ResetConfigurer(VmInterface::CONFIG);
-    VmInterfaceConfigData data(NULL);
+    VmInterfaceConfigData data(NULL, NULL);
     vmi->Resync(table, &data);
-    if (ifmap_node_ != NULL)
-        table->operdb()->dependency_manager()->ResetObject(ifmap_node_);
     return true;
 }
 
@@ -1320,14 +1319,6 @@ bool VmInterface::CopyConfig(const InterfaceTable *table,
             (table->agent()->interface_table()->FindActiveEntry(&key));
     }
 
-    if (ifmap_node_ != data->ifmap_node_) {
-        if (ifmap_node_ != NULL)
-            table->operdb()->dependency_manager()->ResetObject(ifmap_node_);
-        ifmap_node_ = data->ifmap_node_;
-        if (ifmap_node_)
-            table->operdb()->dependency_manager()->SetObject(ifmap_node_, this);
-    }
-
     if (table) {
         if (os_index_ == kInvalidIndex) {
             GetOsParams(table->agent());
@@ -1343,7 +1334,7 @@ bool VmInterface::CopyConfig(const InterfaceTable *table,
 // VmInterfaceNovaData routines
 /////////////////////////////////////////////////////////////////////////////
 VmInterfaceNovaData::VmInterfaceNovaData() :
-    VmInterfaceData(NULL, NOVA),
+    VmInterfaceData(NULL, NULL, NOVA),
     ipv4_addr_(),
     ipv6_addr_(),
     mac_addr_(),
@@ -1364,7 +1355,7 @@ VmInterfaceNovaData::VmInterfaceNovaData(const Ip4Address &ipv4_addr,
                                          const std::string &parent,
                                          uint16_t tx_vlan_id,
                                          uint16_t rx_vlan_id) :
-    VmInterfaceData(NULL, NOVA),
+    VmInterfaceData(NULL, NULL, NOVA),
     ipv4_addr_(ipv4_addr),
     ipv6_addr_(ipv6_addr),
     mac_addr_(mac_addr),
@@ -1404,7 +1395,7 @@ bool VmInterfaceNovaData::OnDelete(const InterfaceTable *table,
         return true;
 
     vmi->ResetConfigurer(VmInterface::CONFIG);
-    VmInterfaceConfigData data(NULL);
+    VmInterfaceConfigData data(NULL, NULL);
     vmi->Resync(table, &data);
     vmi->ResetConfigurer(VmInterface::EXTERNAL);
     return true;
@@ -2348,13 +2339,11 @@ void VmInterface::UpdateL2InterfaceRoute(bool old_l2_active, bool force_update) 
     if (old_l2_active && force_update == false)
         return;
 
-    const string &vrf_name = vrf_.get()->GetName();
-
     assert(peer_.get());
-    Layer2AgentRouteTable::AddLocalVmRoute(peer_.get(), GetUuid(),
-                                           vn_->GetName(), vrf_name, l2_label_,
-                                           vxlan_id_, MacAddress::FromString(vm_mac()),
-                                           ip_addr(), 0, 32);
+    Layer2AgentRouteTable *table = static_cast<Layer2AgentRouteTable *>
+        (vrf_->GetLayer2RouteTable());
+
+    table->AddLocalVmRoute(peer_.get(), this);
 }
 
 void VmInterface::DeleteL2InterfaceRoute(bool old_l2_active, VrfEntry *old_vrf) {
@@ -2367,7 +2356,7 @@ void VmInterface::DeleteL2InterfaceRoute(bool old_l2_active, VrfEntry *old_vrf) 
         vxlan_id_ = 0;
     }
     Layer2AgentRouteTable::Delete(peer_.get(), old_vrf->GetName(),
-                                  vxlan_id_, MacAddress::FromString(vm_mac_));
+                                  MacAddress::FromString(vm_mac_), vxlan_id_);
 }
 
 // Copy the SG List for VM Interface. Used to add route for interface
@@ -3380,7 +3369,7 @@ void VmInterface::Delete(InterfaceTable *table, const uuid &intf_uuid,
     req.key.reset(new VmInterfaceKey(AgentKey::ADD_DEL_CHANGE, intf_uuid, ""));
 
     if (configurer == VmInterface::CONFIG) {
-        req.data.reset(new VmInterfaceConfigData(NULL));
+        req.data.reset(new VmInterfaceConfigData(NULL, NULL));
     } else if (configurer == VmInterface::EXTERNAL) {
         req.data.reset(new VmInterfaceNovaData());
     } else {

@@ -186,7 +186,7 @@ public:
         client->WaitForIdle();
         Layer2AgentRouteTable::DeleteReq(Agent::GetInstance()->local_peer(), 
                                          vrf_name_,
-                                         remote_vm_mac_, 0, NULL);
+                                         remote_vm_mac_, 0);
         client->WaitForIdle();
         agent->fabric_inet4_unicast_table()->
             DeleteReq(agent->local_peer(), vrf_name_,
@@ -303,9 +303,6 @@ public:
             flood_fabric_cnh->GetNH(0));
         ASSERT_TRUE(tnh->GetTunnelType().GetType() == type);
 
-        Ip4Address subnet_broadcast = Ip4Address::from_string("1.1.1.255");
-        InetUnicastRouteEntry *uc_rt =
-            RouteGet("vrf1", subnet_broadcast, 32);
         const CompositeNH *subnet_cnh =
             static_cast<const CompositeNH *>(mc_rt->GetActiveNextHop());
         ASSERT_TRUE(subnet_cnh->ComponentNHCount() == 2);

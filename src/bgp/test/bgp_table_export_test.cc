@@ -71,6 +71,7 @@ public:
     virtual BgpServer *server() { return NULL; }
     virtual IPeerClose *peer_close() { return NULL; }
     virtual IPeerDebugStats *peer_stats() { return NULL; }
+    virtual const IPeerDebugStats *peer_stats() const { return NULL; }
     virtual bool IsReady() const { return true; }
     virtual bool IsXmppPeer() const { return false; }
     virtual void Close() { }
@@ -108,8 +109,8 @@ public:
     }
     virtual void GetRibOutInterestedPeers(RibOut *ribout, 
              const ExtCommunity *ext_community, 
-             const RibPeerSet &peerset, RibPeerSet &new_peerset) {
-        new_peerset = peerset;
+             const RibPeerSet &peerset, RibPeerSet *new_peerset) {
+        *new_peerset = peerset;
     }
 };
 
