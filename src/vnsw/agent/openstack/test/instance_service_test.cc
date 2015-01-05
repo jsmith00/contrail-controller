@@ -11,7 +11,7 @@
 #include <controller/controller_init.h>
 #include <pkt/pkt_init.h>
 #include <services/services_init.h>
-#include <ksync/ksync_init.h>
+#include <vrouter/ksync/ksync_init.h>
 #include <cmn/agent_cmn.h>
 #include <base/task.h>
 #include <io/event_manager.h>
@@ -217,6 +217,17 @@ TEST_F(NovaInfoServerTest, IntrospecPortDelete) {
     req->set_port_uuid(std::string("00000000-0000-0000-0000-000000000001"));
     port_resp_done = false;
     Sandesh::set_response_callback(boost::bind(PortReqResponse, _1, std::string("Success")));
+    req->HandleRequest();
+    client->WaitForIdle();
+    EXPECT_EQ(0, Agent::GetInstance()->interface_config_table()->Size());
+    req->Release();
+}
+
+TEST_F(NovaInfoServerTest, IntrospectErrorPortDelete) {
+    DeletePortReq *req = new DeletePortReq();
+    req->set_port_uuid(std::string("wrong-uuid"));
+    port_resp_done = false;
+    Sandesh::set_response_callback(boost::bind(PortReqResponse, _1, std::string("Port uuid is not correct.")));
     req->HandleRequest();
     client->WaitForIdle();
     EXPECT_EQ(0, Agent::GetInstance()->interface_config_table()->Size());

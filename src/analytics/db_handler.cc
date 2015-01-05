@@ -8,7 +8,6 @@
 #include <boost/asio/ip/host_name.hpp>
 #include <boost/array.hpp>
 #include <boost/uuid/name_generator.hpp>
-#include <boost/uuid/string_generator.hpp>
 
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -20,6 +19,7 @@
 #include <sandesh/sandesh_types.h>
 #include <sandesh/sandesh.h>
 #include <sandesh/sandesh_message_builder.h>
+#include <sandesh/protocol/TXMLProtocol.h>
 
 #include "viz_constants.h"
 #include "vizd_table_desc.h"
@@ -43,6 +43,7 @@ using std::pair;
 using std::string;
 using boost::system::error_code;
 using namespace pugi;
+using namespace contrail::sandesh::protocol;
 using process::ConnectionState;
 using process::ConnectionType;
 using process::ConnectionStatus;
@@ -856,7 +857,7 @@ static const std::vector<FlowRecordFields::type> FlowRecordTableColumns =
     (FlowRecordFields::FLOWREC_UNDERLAY_PROTO)
     (FlowRecordFields::FLOWREC_UNDERLAY_SPORT);
 
-boost::uuids::uuid DbHandler::seed_uuid = boost::uuids::string_generator()(std::string("ffffffffffffffffffffffffffffffff"));
+boost::uuids::uuid DbHandler::seed_uuid = StringToUuid(std::string("ffffffff-ffff-ffff-ffff-ffffffffffff"));
 
 static void PopulateFlowRecordTableColumns(
     const std::vector<FlowRecordFields::type> &frvt,
@@ -1088,7 +1089,9 @@ bool FlowDataIpv4ObjectWalker<T>::for_each(pugi::xml_node& node) {
             }
         case GenDb::DbDataType::AsciiType:
             {
-                values_[ftinfo.get<0>()] = node.child_value();
+                std::string val = node.child_value();
+                TXMLProtocol::unescapeXMLControlChars(val);
+                values_[ftinfo.get<0>()] = val;
                 break;
             }
         default:

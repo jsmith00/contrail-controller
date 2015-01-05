@@ -7,7 +7,6 @@
 
 #include <sys/socket.h>
 #include <netinet/if_ether.h>
-#include <boost/uuid/string_generator.hpp>
 #include <base/logging.h>
 
 #include <io/event_manager.h>
@@ -17,7 +16,7 @@
 #include <controller/controller_vrf_export.h>
 #include <pkt/pkt_init.h>
 #include <services/services_init.h>
-#include <ksync/ksync_init.h>
+#include <vrouter/ksync/ksync_init.h>
 #include <oper/vrf.h>
 #include <pugixml/pugixml.hpp>
 #include <services/dns_proto.h>

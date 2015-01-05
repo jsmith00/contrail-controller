@@ -2,7 +2,6 @@
  * Copyright (c) 2013 Juniper Networks, Inc. All rights reserved.
  */
 
-#include <boost/uuid/string_generator.hpp>
 #include <boost/program_options.hpp>
 #include <base/logging.h>
 #include <base/contrail_ports.h>
@@ -32,7 +31,7 @@
 #include <controller/controller_vrf_export.h>
 #include <pkt/pkt_init.h>
 #include <services/services_init.h>
-#include <ksync/ksync_init.h>
+#include <vrouter/ksync/ksync_init.h>
 #include <openstack/instance_service_server.h>
 #include <uve/agent_uve.h>
 #include <kstate/kstate.h>

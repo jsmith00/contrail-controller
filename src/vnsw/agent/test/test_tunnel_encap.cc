@@ -16,7 +16,7 @@
 #include "controller/controller_init.h"
 #include "pkt/pkt_init.h"
 #include "services/services_init.h"
-#include "ksync/ksync_init.h"
+#include "vrouter/ksync/ksync_init.h"
 #include "oper/interface_common.h"
 #include "oper/nexthop.h"
 #include "oper/tunnel_nh.h"
@@ -185,8 +185,8 @@ public:
                       remote_vm_ip_, 32, NULL);
         client->WaitForIdle();
         Layer2AgentRouteTable::DeleteReq(Agent::GetInstance()->local_peer(), 
-                                         vrf_name_,
-                                         remote_vm_mac_, 0);
+                                         vrf_name_, remote_vm_mac_,
+                                         remote_vm_ip_, 0);
         client->WaitForIdle();
         agent->fabric_inet4_unicast_table()->
             DeleteReq(agent->local_peer(), vrf_name_,

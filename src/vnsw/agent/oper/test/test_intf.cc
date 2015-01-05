@@ -20,8 +20,6 @@
 
 #include "testing/gunit.h"
 
-#include <boost/uuid/string_generator.hpp>
-
 #include <base/logging.h>
 #include <io/event_manager.h>
 #include <tbb/task.h>
@@ -35,7 +33,7 @@
 #include "controller/controller_init.h"
 #include "pkt/pkt_init.h"
 #include "services/services_init.h"
-#include "ksync/ksync_init.h"
+#include "vrouter/ksync/ksync_init.h"
 #include "oper/interface_common.h"
 #include "oper/nexthop.h"
 #include "route/route.h"

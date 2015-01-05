@@ -4,7 +4,6 @@
 
 #include <net/address.h>
 #include <base/logging.h>
-#include <boost/uuid/string_generator.hpp>
 #include <io/event_manager.h>
 #include <tbb/task.h>
 #include <base/task.h>
@@ -406,8 +405,7 @@ InstanceServiceAsyncHandler::AddLocalVmRoute(const std::string& ip_address,
 	return false;
     }
     boost::uuids::uuid intf_uuid;
-    boost::uuids::string_generator gen;
-    intf_uuid = gen(intf);
+    intf_uuid = StringToUuid(intf);
 
     uint32_t mpls_label;
     if (label.empty()) {
@@ -487,9 +485,8 @@ InstanceServiceAsyncHandler::ConvertToUuid(const tuuid &id) {
 InstanceServiceAsyncHandler::uuid 
 InstanceServiceAsyncHandler::MakeUuid(int id) {
     char str[50];
-    boost::uuids::string_generator gen;
-    sprintf(str, "0000000000000000000000000000000%d", id);
-    boost::uuids::uuid u1 = gen(std::string(str));
+    sprintf(str, "00000000-0000-0000-0000-0000000000%02x", id);
+    boost::uuids::uuid u1 = StringToUuid(std::string(str));
 
     return u1;
 }
@@ -566,6 +563,10 @@ void AddPortReq::HandleRequest() const {
         resp_str += "Vn uuid is not correct, ";
         err = true;
     }
+    if (vm_project_uuid == nil_uuid()) {
+        resp_str += "Vm project uuid is not correct, ";
+        err = true;
+    }
     if (!ValidateMac(mac_address)) {
         resp_str += "Invalid MAC, Use xx:xx:xx:xx:xx:xx format";
         err = true;
@@ -600,8 +601,6 @@ void AddPortReq::HandleRequest() const {
 }
 
 void DeletePortReq::HandleRequest() const {
-    string_generator gen;
-
     PortResp *resp = new PortResp();
     resp->set_context(context());
 
@@ -609,6 +608,7 @@ void DeletePortReq::HandleRequest() const {
     if (port_uuid == nil_uuid()) {
         resp->set_resp(std::string("Port uuid is not correct."));
         resp->Response();
+        return;
     }
 
     CfgIntTable *ctable = Agent::GetInstance()->interface_config_table();

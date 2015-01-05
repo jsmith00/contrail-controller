@@ -10,7 +10,7 @@
 #include <controller/controller_init.h>
 #include <pkt/pkt_init.h>
 #include <services/services_init.h>
-#include <ksync/ksync_init.h>
+#include <vrouter/ksync/ksync_init.h>
 #include <cmn/agent_cmn.h>
 #include <base/task.h>
 #include <io/event_manager.h>
@@ -23,7 +23,7 @@
 #include <uve/agent_uve.h>
 #include <uve/stats_interval_types.h>
 #include <uve/agent_stats_interval_types.h>
-#include <uve/flow_stats_interval_types.h>
+#include <vrouter/flow_stats/flow_stats_interval_types.h>
 #include "vr_types.h"
 
 #include "testing/gunit.h"
@@ -387,7 +387,6 @@ TEST_F(UveTest, VrfAddDelTest_1) {
 }
 
 TEST_F(UveTest, StatsCollectorTest) {
-    AgentUve *uve = static_cast<AgentUve *>(Agent::GetInstance()->uve());
     AgentStatsCollectorTest *collector = static_cast<AgentStatsCollectorTest *>
         (Agent::GetInstance()->stats_collector());
     collector->interface_stats_responses_ = 0;
@@ -456,7 +455,6 @@ TEST_F(UveTest, StatsCollectorTest) {
 
 TEST_F(UveTest, SandeshTest) {
     Agent *agent = Agent::GetInstance();
-    AgentUve *uve = static_cast<AgentUve *>(Agent::GetInstance()->uve());
     AgentStatsCollectorTest *collector = static_cast<AgentStatsCollectorTest *>
         (Agent::GetInstance()->stats_collector());
 

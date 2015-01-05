@@ -11,7 +11,6 @@
 #include <netinet/if_ether.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
-#include <boost/uuid/string_generator.hpp>
 #include <boost/scoped_array.hpp>
 #include <base/logging.h>
 
@@ -22,7 +21,7 @@
 #include <controller/controller_vrf_export.h>
 #include <pkt/pkt_init.h>
 #include <services/services_init.h>
-#include <ksync/ksync_init.h>
+#include <vrouter/ksync/ksync_init.h>
 #include <openstack/instance_service_server.h>
 #include <oper/vrf.h>
 #include <pugixml/pugixml.hpp>
