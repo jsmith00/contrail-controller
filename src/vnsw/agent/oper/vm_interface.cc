@@ -694,10 +694,7 @@ bool InterfaceTable::VmiIFNodeToReq(IFMapNode *node, DBRequest &req) {
             FindAdjacentIFMapNode(agent_, logical_node, "physical-interface");
         //Add physical interface
         if (physical_node) {
-            autogen::PhysicalInterface *physical_interface =
-                static_cast <autogen::PhysicalInterface *>(
-                        physical_node->GetObject());
-            data->parent_ = physical_interface->display_name();
+            data->parent_ = physical_node->name();
         }
     }
 
@@ -2373,7 +2370,6 @@ void VmInterface::DeleteL2InterfaceRoute(bool old_l2_active, VrfEntry *old_vrf,
 
     if ((vxlan_id_ != 0) &&
         (TunnelType::ComputeType(TunnelType::AllType()) == TunnelType::VXLAN)) {
-        VxLanId::Delete(vxlan_id_);
         vxlan_id_ = 0;
     }
 
