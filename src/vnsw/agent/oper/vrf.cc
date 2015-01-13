@@ -58,7 +58,8 @@ VrfEntry::VrfEntry(const string &name, uint32_t flags) :
         name_(name), id_(kInvalidIndex), flags_(flags),
         walkid_(DBTableWalker::kInvalidWalkerId), deleter_(NULL),
         rt_table_db_(), delete_timeout_timer_(NULL),
-        table_label_(MplsTable::kInvalidLabel){
+        table_label_(MplsTable::kInvalidLabel),
+        vxlan_id_(VxLanTable::kInvalidvxlan_id) {
 }
 
 VrfEntry::~VrfEntry() {
@@ -81,46 +82,76 @@ string VrfEntry::ToString() const {
     return "VRF";
 }
 
+bool VrfEntry::UpdateVxlanId(Agent *agent, uint32_t new_vxlan_id) {
+    bool ret = false;
+    if (new_vxlan_id == vxlan_id_) {
+        return ret;
+    }
+
+    vxlan_id_ = new_vxlan_id;
+    return ret;
+}
+
 void VrfEntry::PostAdd() {
+    VrfTable *table = static_cast<VrfTable *>(get_table());
+    Agent *agent = table->agent();
     // get_table() would return NULL in Add(), so move dependent functions and 
     // initialization to PostAdd
     deleter_.reset(new DeleteActor(this));
     // Create the route-tables and insert them into dbtree_
     Agent::RouteTableType type = Agent::INET4_UNICAST;
-    AgentDBTable *table = static_cast<AgentDBTable *>(get_table());
     DB *db = get_table()->database();
     rt_table_db_[type] = static_cast<AgentRouteTable *>
         (db->CreateTable(name_ + AgentRouteTable::GetSuffix(type)));
     rt_table_db_[type]->SetVrf(this);
-    ((VrfTable *)get_table())->dbtree_[type].insert(VrfTable::VrfDbPair(name_, 
-                                                        rt_table_db_[type]));
+    table->dbtree_[type].insert(VrfTable::VrfDbPair(name_, rt_table_db_[type]));
 
     type = Agent::INET4_MULTICAST;
     rt_table_db_[type] = static_cast<AgentRouteTable *>
         (db->CreateTable(name_ + AgentRouteTable::GetSuffix(type)));
     rt_table_db_[type]->SetVrf(this);
-    ((VrfTable *)get_table())->dbtree_[type].insert(VrfTable::VrfDbPair(name_, 
-                                                        rt_table_db_[type]));
+    table->dbtree_[type].insert(VrfTable::VrfDbPair(name_, rt_table_db_[type]));
 
-    type = Agent::LAYER2;
+    type = Agent::EVPN;
     rt_table_db_[type] = static_cast<AgentRouteTable *>
         (db->CreateTable(name_ + AgentRouteTable::GetSuffix(type)));
     rt_table_db_[type]->SetVrf(this);
-    ((VrfTable *)get_table())->dbtree_[type].insert(VrfTable::VrfDbPair(name_, 
-                                                        rt_table_db_[type]));
+    table->dbtree_[type].insert(VrfTable::VrfDbPair(name_, rt_table_db_[type]));
 
     type = Agent::INET6_UNICAST;
     rt_table_db_[type] = static_cast<AgentRouteTable *>
         (db->CreateTable(name_ + AgentRouteTable::GetSuffix(type)));
     rt_table_db_[type]->SetVrf(this);
-    ((VrfTable *)get_table())->dbtree_[type].insert(VrfTable::VrfDbPair(name_, 
-                                                        rt_table_db_[type]));
+    table->dbtree_[type].insert(VrfTable::VrfDbPair(name_, rt_table_db_[type]));
 
-    if (table->agent()->fabric_vrf_name() != name_) {
-        set_table_label(table->agent()->mpls_table()->AllocLabel());
-        MplsTable::CreateTableLabel(table->agent(), table_label(), name_,
-                                    false);
+    if (agent->fabric_vrf_name() != name_) {
+        set_table_label(agent->mpls_table()->AllocLabel());
+        MplsTable::CreateTableLabel(agent, table_label(), name_, false);
     }
+
+    uint32_t vxlan_id = VxLanTable::kInvalidvxlan_id;
+    if (vn_) {
+        vxlan_id = vn_->GetVxLanId();
+    }
+    UpdateVxlanId(agent, vxlan_id);
+
+    // Add the L2 Receive routes for VRRP mac
+    EvpnAgentRouteTable *l2_table = static_cast<EvpnAgentRouteTable *>
+        (rt_table_db_[Agent::EVPN]);
+    l2_table->AddEvpnReceiveRoute(agent->local_vm_peer(), name_, 0,
+                                    agent->vrrp_mac(), "");
+
+    // Add the L2 Receive routes for xconnect interface to vhost
+    // Note, vhost is not created when fabric VRF is created. We only need
+    // VRRP MAC on fabric vrf. So, we are good for now
+    const InetInterface *vhost = static_cast<const InetInterface *>
+        (agent->vhost_interface());
+    if (vhost && vhost->xconnect()) {
+        l2_table->AddEvpnReceiveRoute(agent->local_vm_peer(), name_, 0,
+                                        vhost->xconnect()->mac(), "");
+    }
+
+    SendObjectLog(AgentLogEvent::ADD);
 }
 
 DBEntryBase::KeyPtr VrfEntry::GetDBRequestKey() const {
@@ -177,8 +208,8 @@ AgentRouteTable *VrfEntry::GetInet4MulticastRouteTable() const {
     return rt_table_db_[Agent::INET4_MULTICAST];
 }
 
-AgentRouteTable *VrfEntry::GetLayer2RouteTable() const {
-    return rt_table_db_[Agent::LAYER2];
+AgentRouteTable *VrfEntry::GetEvpnRouteTable() const {
+    return rt_table_db_[Agent::EVPN];
 }
 
 InetUnicastAgentRouteTable *VrfEntry::GetInet6UnicastRouteTable() const {
@@ -211,6 +242,7 @@ bool VrfEntry::DBEntrySandesh(Sandesh *sresp, std::string &name) const {
 
         std::vector<VrfSandeshData> &list = 
                 const_cast<std::vector<VrfSandeshData>&>(resp->get_vrf_list());
+        data.set_vxlan_id(vxlan_id_);
         list.push_back(data);
         return true;
     }
@@ -248,7 +280,7 @@ bool VrfEntry::DeleteTimeout() {
     std::ostringstream str;
     str << "Unicast routes: " << rt_table_db_[Agent::INET4_UNICAST]->Size();
     str << " Mutlicast routes: " << rt_table_db_[Agent::INET4_MULTICAST]->Size();
-    str << " Layer2 routes: " << rt_table_db_[Agent::LAYER2]->Size();
+    str << " Evpn routes: " << rt_table_db_[Agent::EVPN]->Size();
     str << "Unicast v6 routes: " << rt_table_db_[Agent::INET6_UNICAST]->Size();
     str << " Reference: " << GetRefCount();
     OPER_TRACE(Vrf, "VRF delete failed, " + str.str(), name_);
@@ -292,11 +324,11 @@ DBEntry *VrfTable::Add(const DBRequest *req) {
     name_tree_.insert( VrfNamePair(key->name_, vrf));
 
     vrf->vn_.reset(agent()->vn_table()->Find(data->vn_uuid_));
-    vrf->SendObjectLog(AgentLogEvent::ADD);
     return vrf;
 }
 
 bool VrfTable::OnChange(DBEntry *entry, const DBRequest *req) {
+    bool ret = false;
     VrfEntry *vrf = static_cast<VrfEntry *>(entry);
     VrfData *data = static_cast<VrfData *>(req->data.get());
     vrf->set_flags(data->flags_);
@@ -304,9 +336,15 @@ bool VrfTable::OnChange(DBEntry *entry, const DBRequest *req) {
     VnEntry *vn = agent()->vn_table()->Find(data->vn_uuid_);
     if (vn != vrf->vn_.get()) {
         vrf->vn_.reset(vn);
-        return true;
+        ret = true;
     }
-    return false;
+
+    uint32_t vxlan_id = VxLanTable::kInvalidvxlan_id;
+    if (vn) {
+        vxlan_id = vn->GetVxLanId();
+    }
+    vrf->UpdateVxlanId(agent(), vxlan_id);
+    return ret;
 }
 
 bool VrfTable::Delete(DBEntry *entry, const DBRequest *req) {
@@ -319,6 +357,19 @@ bool VrfTable::Delete(DBEntry *entry, const DBRequest *req) {
     if (vrf->flags_ != 0)
         return false;
 
+    // Delete the L2 Receive routes added by default
+    EvpnAgentRouteTable *l2_table = static_cast<EvpnAgentRouteTable *>
+        (vrf->rt_table_db_[Agent::EVPN]);
+    l2_table->Delete(agent()->local_vm_peer(), vrf->GetName(),
+                     agent()->vrrp_mac(), IpAddress(), 0);
+    const InetInterface *vhost = static_cast<const InetInterface *>
+        (agent()->vhost_interface());
+    if (vhost && vhost->xconnect()) {
+        l2_table->Delete(agent()->local_vm_peer(), vrf->GetName(),
+                         vhost->xconnect()->mac(), IpAddress(), 0);
+    }
+
+    vrf->UpdateVxlanId(agent(), VxLanTable::kInvalidvxlan_id);
     vrf->vn_.reset(NULL);
     if (vrf->table_label() != MplsTable::kInvalidLabel) {
         MplsLabel::Delete(agent(), vrf->table_label());
@@ -395,8 +446,8 @@ AgentRouteTable *VrfTable::GetInet4MulticastRouteTable(const string &vrf_name) {
     return GetRouteTable(vrf_name, Agent::INET4_MULTICAST);
 }
 
-AgentRouteTable *VrfTable::GetLayer2RouteTable(const string &vrf_name) {
-    return GetRouteTable(vrf_name, Agent::LAYER2);
+AgentRouteTable *VrfTable::GetEvpnRouteTable(const string &vrf_name) {
+    return GetRouteTable(vrf_name, Agent::EVPN);
 }
 
 InetUnicastAgentRouteTable *VrfTable::GetInet6UnicastRouteTable

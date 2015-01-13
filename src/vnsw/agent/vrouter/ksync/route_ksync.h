@@ -32,6 +32,7 @@ public:
     uint32_t prefix_len() const { return prefix_len_; }
     uint32_t label() const { return label_; }
     bool proxy_arp() const { return proxy_arp_; }
+    bool flood() const { return flood_; }
     NHKSyncEntry* nh() const { 
         return static_cast<NHKSyncEntry *>(nh_.get());
     }
@@ -47,6 +48,8 @@ public:
     virtual int AddMsg(char *buf, int buf_len);
     virtual int ChangeMsg(char *buf, int buf_len);
     virtual int DeleteMsg(char *buf, int buf_len);
+
+    bool BuildRouteFlags(const DBEntry *rt, const MacAddress &mac);
 private:
     int Encode(sandesh_op::type op, uint8_t replace_plen,
                char *buf, int buf_len);
@@ -55,6 +58,7 @@ private:
     bool UcIsLess(const KSyncEntry &rhs) const;
     bool McIsLess(const KSyncEntry &rhs) const;
     bool L2IsLess(const KSyncEntry &rhs) const;
+
     RouteKSyncObject* ksync_obj_;
     Agent::RouteTableType rt_type_;
     uint32_t vrf_id_;
@@ -69,13 +73,14 @@ private:
     string address_string_;
     TunnelType::Type tunnel_type_;
     bool wait_for_traffic_;
+    IpAddress evpn_ip_;
+    bool local_vm_peer_route_;
     bool flood_;
     DISALLOW_COPY_AND_ASSIGN(RouteKSyncEntry);
 };
 
 class RouteKSyncObject : public KSyncDBObject {
 public:
-    typedef std::map<uint32_t, RouteKSyncObject *> VrfRtObjectMap;
     struct VrfState : DBState {
         VrfState() : DBState(), seen_(false) {};
         bool seen_;
@@ -102,9 +107,17 @@ private:
 
 class VrfKSyncObject {
 public:
+    // Table to maintain IP - MAC binding. Used to stitch MAC to inet routes
+    typedef std::map<IpAddress, MacAddress> IpToMacBinding;
+
     struct VrfState : DBState {
         VrfState() : DBState(), seen_(false) {};
         bool seen_;
+        RouteKSyncObject *inet4_uc_route_table_;
+        RouteKSyncObject *inet4_mc_route_table_;
+        RouteKSyncObject *inet6_uc_route_table_;
+        RouteKSyncObject *evpn_route_table_;
+        IpToMacBinding  ip_mac_binding_;
     };
 
     VrfKSyncObject(KSync *ksync);
@@ -115,9 +128,16 @@ public:
     void RegisterDBClients();
     void Shutdown();
     void VrfNotify(DBTablePartBase *partition, DBEntryBase *e);
-    void AddToVrfMap(uint32_t vrf_id, RouteKSyncObject *,
-                     unsigned int table_id);
-    void DelFromVrfMap(RouteKSyncObject *);
+
+    void AddIpMacBinding(VrfEntry *vrf, const IpAddress &ip,
+                         const MacAddress &mac);
+    void DelIpMacBinding(VrfEntry *vrf, const IpAddress &ip,
+                         const MacAddress &mac);
+    MacAddress GetIpMacBinding(VrfEntry *vrf, const IpAddress &ip) const;
+    void NotifyUcRoute(VrfEntry *vrf, VrfState *state, const IpAddress &ip);
+    bool RouteNeedsMacBinding(const InetUnicastRouteEntry *rt);
+    DBTableBase::ListenerId listener_id() const { return vrf_listener_id_; }
+
 private:
     KSync *ksync_;
     DBTableBase::ListenerId vrf_listener_id_;

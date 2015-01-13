@@ -47,7 +47,7 @@ InetUnicastAgentRouteTable::InetUnicastAgentRouteTable(DB *db,
     } else if (name.find("uc.route6.0") != std::string::npos) {
         type_ = Agent::INET6_UNICAST;
     } else if (name.find("l2.route.0") != std::string::npos) {
-        type_ = Agent::LAYER2;;
+        type_ = Agent::EVPN;;
     } else if (name.find("mc.route.0") != std::string::npos) {
         type_ = Agent::INET4_MULTICAST;
     } else {
@@ -210,10 +210,22 @@ bool InetUnicastAgentRouteTable::ResyncSubnetRoutes(const InetUnicastRouteEntry 
                 break;
         }
 
-        //Ignore all non subnet routes.
+        //Ignored all non subnet routes.
         if (lpm_rt->IsHostRoute() == false) {
+            bool notify = false;
             if (lpm_rt->ipam_subnet_route() != add_change) {
                 lpm_rt->set_ipam_subnet_route(add_change);
+                notify = true;
+            }
+
+            if (lpm_rt->proxy_arp() == true) {
+                if (add_change == true) {
+                    lpm_rt->set_proxy_arp(false);
+                    notify = true;
+                } 
+            }
+
+            if (notify) {
                 //Send notify 
                 NotifyEntry(lpm_rt);
             }
@@ -231,8 +243,9 @@ InetUnicastRouteEntry::InetUnicastRouteEntry(VrfEntry *vrf,
                                              const IpAddress &addr,
                                              uint8_t plen,
                                              bool is_multicast) :
-    AgentRoute(vrf, is_multicast), plen_(plen), ipam_subnet_route_(false) {
-    if (addr.is_v4()) {
+    AgentRoute(vrf, is_multicast), plen_(plen), ipam_subnet_route_(false),
+    proxy_arp_(false) {
+        if (addr.is_v4()) {
         addr_ = Address::GetIp4SubnetAddress(addr.to_v4(), plen);
     } else {
         addr_ = Address::GetIp6SubnetAddress(addr.to_v6(), plen);
@@ -478,7 +491,7 @@ bool InetUnicastRouteEntry::EcmpDeletePath(AgentPath *path) {
  * gateway without having Ipam path, then search continues further
  */
 bool InetUnicastRouteEntry::IpamSubnetRouteAvailable() const {
-    if ((IsHostRoute() == true) || (plen_ == 0))
+    if (plen_ == 0)
         return false;
 
     //Local path present means that this route itself was programmed
@@ -493,13 +506,16 @@ bool InetUnicastRouteEntry::IpamSubnetRouteAvailable() const {
     uint16_t plen = plen_ - 1;
     while (plen != 0) {
         assert(plen < plen_);
-        InetUnicastRouteEntry key(NULL, addr_, plen, false);
+        InetUnicastRouteEntry key(vrf(), addr_, plen, false);
+        // Find next highest matching route
         InetUnicastRouteEntry *supernet_rt = table->FindRouteUsingKey(key);
         
         if (supernet_rt == NULL)
             return false;
 
-        return supernet_rt->ipam_subnet_route();
+        if (supernet_rt->ipam_subnet_route())
+            return true;
+
         plen--;
     }
 
@@ -519,6 +535,7 @@ bool InetUnicastRouteEntry::ReComputePathDeletion(AgentPath *path) {
     if (path->is_subnet_discard()) {
         //Reset flag on route as ipam is going off.
         ipam_subnet_route_ = false;
+        proxy_arp_ = false;
         InetUnicastAgentRouteTable *uc_rt_table =
             static_cast<InetUnicastAgentRouteTable *>(get_table());
         uc_rt_table->ResyncSubnetRoutes(this, false);
@@ -812,6 +829,7 @@ bool InetUnicastRouteEntry::DBEntrySandesh(Sandesh *sresp, bool stale) const {
     data.set_src_ip(addr_.to_string());
     data.set_src_plen(plen_);
     data.set_ipam_subnet_route(ipam_subnet_route_);
+    data.set_proxy_arp(proxy_arp_);
     data.set_src_vrf(vrf()->GetName());
     data.set_multicast(AgentRoute::is_multicast());
     for (Route::PathList::const_iterator it = GetPathList().begin();
@@ -1282,7 +1300,7 @@ void InetUnicastAgentRouteTable::AddVHostRecvRoute(const Peer *peer,
     DBRequest req;
     AddVHostRecvRouteInternal(&req, peer, vrf, interface, addr, plen,
                               vn_name, policy);
-    static_cast<ReceiveRoute *>(req.data.get())->EnableProxyArp();
+    static_cast<ReceiveRoute *>(req.data.get())->set_proxy_arp();
     Inet4UnicastTableProcess(Agent::GetInstance(), vrf, req);
 }
 
@@ -1292,7 +1310,7 @@ void InetUnicastAgentRouteTable::AddVHostRecvRouteReq
     DBRequest req;
     AddVHostRecvRouteInternal(&req, peer, vrf, interface, addr, plen,
                               vn_name, policy);
-    static_cast<ReceiveRoute *>(req.data.get())->EnableProxyArp();
+    static_cast<ReceiveRoute *>(req.data.get())->set_proxy_arp();
     Inet4UnicastTableEnqueue(Agent::GetInstance(), &req);
 }
 

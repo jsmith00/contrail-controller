@@ -86,6 +86,7 @@ public:
     bool DBEntrySandesh(Sandesh *sresp, std::string &name) const;
     InetUnicastRouteEntry *GetUcRoute(const IpAddress &addr) const;
     InetUnicastRouteEntry *GetUcRoute(const InetUnicastRouteEntry &rt_key) const;
+    bool UpdateVxlanId(Agent *agent, uint32_t new_vxlan_id);
 
     LifetimeActor *deleter();
     void SendObjectLog(AgentLogEvent::type event) const;
@@ -104,7 +105,7 @@ public:
 
     InetUnicastAgentRouteTable *GetInet4UnicastRouteTable() const;
     AgentRouteTable *GetInet4MulticastRouteTable() const;
-    AgentRouteTable *GetLayer2RouteTable() const;
+    AgentRouteTable *GetEvpnRouteTable() const;
     InetUnicastAgentRouteTable *GetInet6UnicastRouteTable() const;
     AgentRouteTable *GetRouteTable(uint8_t table_type) const;
 private:
@@ -119,6 +120,7 @@ private:
     AgentRouteTable *rt_table_db_[Agent::ROUTE_TABLE_MAX];
     Timer *delete_timeout_timer_;
     uint32_t table_label_;
+    uint32_t vxlan_id_;
     DISALLOW_COPY_AND_ASSIGN(VrfEntry);
 };
 
@@ -172,7 +174,7 @@ public:
     InetUnicastAgentRouteTable *GetInet4UnicastRouteTable
         (const std::string &vrf_name);
     AgentRouteTable *GetInet4MulticastRouteTable(const std::string &vrf_name);
-    AgentRouteTable *GetLayer2RouteTable(const std::string &vrf_name);
+    AgentRouteTable *GetEvpnRouteTable(const std::string &vrf_name);
     AgentRouteTable *GetRouteTable(const string &vrf_name, uint8_t table_type);
     InetUnicastAgentRouteTable *GetInet6UnicastRouteTable
         (const std::string &vrf_name);

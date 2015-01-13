@@ -84,7 +84,7 @@ class PhysicalDeviceVnTable : public AgentDBTable {
     typedef std::pair<PhysicalDeviceVnKey, uint32_t> ConfigPair;
 
     PhysicalDeviceVnTable(DB *db, const std::string &name) :
-        AgentDBTable(db, name) { }
+        AgentDBTable(db, name), walkid_(DBTableWalker::kInvalidWalkerId) { }
     virtual ~PhysicalDeviceVnTable() { }
 
     virtual std::auto_ptr<DBEntry> AllocEntry(const DBRequestKey *k) const;
@@ -95,7 +95,7 @@ class PhysicalDeviceVnTable : public AgentDBTable {
     virtual bool OnChange(DBEntry *entry, const DBRequest *req);
     virtual bool Delete(DBEntry *entry, const DBRequest *req);
     virtual bool IFNodeToReq(IFMapNode *node, DBRequest &req);
-    virtual bool Resync(DBEntry *entry, DBRequest *req);
+    virtual bool Resync(DBEntry *entry, const DBRequest *req);
 
     void IterateConfig(const Agent *agent, const char *type, IFMapNode *node,
                        AgentKey *key, AgentData *data,

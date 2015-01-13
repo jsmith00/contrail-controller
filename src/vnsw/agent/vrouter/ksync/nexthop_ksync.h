@@ -45,6 +45,7 @@ public:
     void FillObjectLog(sandesh_op::type op, KSyncNhInfo &info) const;
     uint32_t nh_id() const { return nh_id_;}
     void SetEncap(InterfaceKSyncEntry *if_ksync, std::vector<int8_t> &encap);
+    bool is_bridge() const { return is_bridge_; }
 private:
     class KSyncComponentNH {
     public:
@@ -86,12 +87,13 @@ private:
     const NextHop *nh_;
     uint16_t vlan_tag_;
     bool is_local_ecmp_nh_;
-    bool is_layer2_;
+    bool is_bridge_;
     COMPOSITETYPE comp_type_;
     TunnelType tunnel_type_;
     uint8_t prefix_len_;
     uint32_t nh_id_;
     ComponentNHKeyList component_nh_key_list_;
+    bool vxlan_nh_;
     DISALLOW_COPY_AND_ASSIGN(NHKSyncEntry);
 };
 

@@ -483,13 +483,13 @@ void InterfaceNH::DeleteL3InterfaceNH(const uuid &intf_uuid) {
 void InterfaceNH::CreateL2VmInterfaceNH(const uuid &intf_uuid,
                                         const MacAddress &dmac,
                                         const string &vrf_name) {
-    AddInterfaceNH(intf_uuid, dmac, InterfaceNHFlags::LAYER2, false, vrf_name);
-    AddInterfaceNH(intf_uuid, dmac, InterfaceNHFlags::LAYER2, true, vrf_name);
+    AddInterfaceNH(intf_uuid, dmac, InterfaceNHFlags::BRIDGE, false, vrf_name);
+    AddInterfaceNH(intf_uuid, dmac, InterfaceNHFlags::BRIDGE, true, vrf_name);
 }
 
 void InterfaceNH::DeleteL2InterfaceNH(const uuid &intf_uuid) {
-    DeleteNH(intf_uuid, false, InterfaceNHFlags::LAYER2);
-    DeleteNH(intf_uuid, true, InterfaceNHFlags::LAYER2);
+    DeleteNH(intf_uuid, false, InterfaceNHFlags::BRIDGE);
+    DeleteNH(intf_uuid, true, InterfaceNHFlags::BRIDGE);
 }
 
 void InterfaceNH::CreateMulticastVmInterfaceNH(const uuid &intf_uuid,
@@ -517,8 +517,8 @@ void InterfaceNH::DeleteNH(const uuid &intf_uuid, bool policy,
 
 // Delete the 2 InterfaceNH. One with policy another without policy
 void InterfaceNH::DeleteVmInterfaceNHReq(const uuid &intf_uuid) {
-    DeleteNH(intf_uuid, false, InterfaceNHFlags::LAYER2);
-    DeleteNH(intf_uuid, true, InterfaceNHFlags::LAYER2);
+    DeleteNH(intf_uuid, false, InterfaceNHFlags::BRIDGE);
+    DeleteNH(intf_uuid, true, InterfaceNHFlags::BRIDGE);
     DeleteNH(intf_uuid, false, InterfaceNHFlags::INET4);
     DeleteNH(intf_uuid, true, InterfaceNHFlags::INET4);
     DeleteNH(intf_uuid, false, InterfaceNHFlags::MULTICAST);
@@ -643,8 +643,20 @@ void VrfNH::SetKey(const DBRequestKey *k) {
 }
 
 VrfNH::KeyPtr VrfNH::GetDBRequestKey() const {
-    NextHopKey *key = new VrfNHKey(vrf_->GetName(), false);
+    NextHopKey *key = new VrfNHKey(vrf_->GetName(), policy_);
     return DBEntryBase::KeyPtr(key);
+}
+
+bool VrfNH::Change(const DBRequest *req) {
+    bool ret = false;
+    const VrfNHData *data = static_cast<const VrfNHData *>(req->data.get());
+
+    if (vxlan_nh_ != data->vxlan_nh_) {
+        vxlan_nh_ = data->vxlan_nh_;
+        ret = true;
+    }
+
+    return ret;
 }
 
 void VrfNH::SendObjectLog(AgentLogEvent::type event) const {
@@ -1016,6 +1028,24 @@ void DiscardNH::Create( ) {
     DBRequest req(DBRequest::DB_ENTRY_ADD_CHANGE);
     req.key.reset(new DiscardNHKey());
     req.data.reset(new DiscardNHData());
+    NextHopTable::GetInstance()->Process(req);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// L2ReceiveNH routines
+/////////////////////////////////////////////////////////////////////////////
+NextHop *L2ReceiveNHKey::AllocEntry() const {
+    return new L2ReceiveNH();
+}
+
+bool L2ReceiveNH::CanAdd() const {
+    return true;
+}
+
+void L2ReceiveNH::Create( ) {
+    DBRequest req(DBRequest::DB_ENTRY_ADD_CHANGE);
+    req.key.reset(new L2ReceiveNHKey());
+    req.data.reset(new L2ReceiveNHData());
     NextHopTable::GetInstance()->Process(req);
 }
 
@@ -2111,9 +2141,13 @@ static void ExpandCompositeNextHop(const CompositeNH *comp_nh,
 
 void NextHop::SetNHSandeshData(NhSandeshData &data) const {
     data.set_nh_index(id());
+    data.set_vxlan_flag(false);
     switch (type_) {
         case DISCARD:
             data.set_type("discard");
+            break;
+        case L2_RECEIVE:
+            data.set_type("l2-receive");
             break;
         case RECEIVE: {
             data.set_type("receive");
@@ -2149,6 +2183,7 @@ void NextHop::SetNHSandeshData(NhSandeshData &data) const {
             data.set_type("vrf");
             const VrfNH *vrf = static_cast<const VrfNH *>(this);
             data.set_vrf(vrf->GetVrf()->GetName());
+            data.set_vxlan_flag(vrf->vxlan_nh());
             break;
         }
         case INTERFACE: {

@@ -19,6 +19,7 @@ struct VmInterfaceIpAddressData;
 struct VmInterfaceOsOperStateData;
 struct VmInterfaceMirrorData;
 class OperDhcpOptions;
+class PathPreference;
 
 class LocalVmPortPeer;
 /////////////////////////////////////////////////////////////////////////////
@@ -66,14 +67,19 @@ public:
 
         bool operator() (const FloatingIp &lhs, const FloatingIp &rhs) const;
         bool IsLess(const FloatingIp *rhs) const;
-        void Activate(VmInterface *interface, bool force_update) const;
-        void DeActivate(VmInterface *interface) const;
+        void L3Activate(VmInterface *interface, bool force_update) const;
+        void L3DeActivate(VmInterface *interface) const;
+        void L2Activate(VmInterface *interface, bool force_update) const;
+        void L2DeActivate(VmInterface *interface) const;
+        void DeActivate(VmInterface *interface, bool l2) const;
+        void Activate(VmInterface *interface, bool force_update, bool l2) const;
 
         IpAddress floating_ip_;
         mutable VnEntryRef vn_;
         mutable VrfEntryRef vrf_;
         std::string vrf_name_;
         boost::uuids::uuid vn_uuid_;
+        mutable bool l2_installed_;
     };
     typedef std::set<FloatingIp, FloatingIp> FloatingIpSet;
 
@@ -307,7 +313,7 @@ public:
     }
     bool do_dhcp_relay() const { return do_dhcp_relay_; }
     int vxlan_id() const { return vxlan_id_; }
-    bool layer2_forwarding() const { return layer2_forwarding_; }
+    bool bridging() const { return bridging_; }
     bool layer3_forwarding() const { return layer3_forwarding_; }
     const std::string &vm_name() const { return vm_name_; }
     const boost::uuids::uuid &vm_project_uuid() const { return vm_project_uuid_; }
@@ -367,6 +373,7 @@ public:
 
     const std::string GetAnalyzer() const; 
 
+    void SetPathPreference(PathPreference *pref, bool ecmp) const;
     void CopySgIdList(SecurityGroupList *sg_id_list) const;
     bool NeedMplsLabel() const;
     bool IsVxlanMode() const;
@@ -417,7 +424,6 @@ public:
 
     void AllocL2MplsLabel(bool force_update, bool policy_change);
     void DeleteL2MplsLabel();
-    void AddL2Route();
     void UpdateL2(bool force_update);
     const AclDBEntry* vrf_assign_acl() const { return vrf_assign_acl_.get();}
     bool WaitForTraffic() const;
@@ -524,8 +530,9 @@ private:
     void UpdateMetadataRoute(bool old_ipv4_active, VrfEntry *old_vrf);
     void DeleteMetadataRoute(bool old_ipv4_active, VrfEntry *old_vrf,
                              bool old_need_linklocal_ip);
-    void UpdateFloatingIp(bool force_update, bool policy_change);
-    void DeleteFloatingIp();
+    void CleanupFloatingIpList();
+    void UpdateFloatingIp(bool force_update, bool policy_change, bool l2);
+    void DeleteFloatingIp(bool l2);
     void UpdateServiceVlan(bool force_update, bool policy_change);
     void DeleteServiceVlan();
     void UpdateStaticRoute(bool force_update, bool policy_change);
@@ -548,7 +555,6 @@ private:
                        const MacAddress &mac);
     void UpdateVrfAssignRule();
     void DeleteVrfAssignRule();
-    void UpdateFipFamilyCount(const FloatingIp &fip);
 
     VmEntryRef vm_;
     VnEntryRef vn_;
@@ -574,7 +580,7 @@ private:
     // project uuid of the vm to which the interface belongs
     boost::uuids::uuid vm_project_uuid_;
     int vxlan_id_;
-    bool layer2_forwarding_;
+    bool bridging_;
     bool layer3_forwarding_;
     bool mac_set_;
     bool ecmp_;
@@ -707,7 +713,7 @@ struct VmInterfaceConfigData : public VmInterfaceData {
         VmInterfaceData(agent, node, CONFIG), addr_(0), ip6_addr_(),
         vm_mac_(""),
         cfg_name_(""), vm_uuid_(), vm_name_(), vn_uuid_(), vrf_name_(""),
-        fabric_port_(true), need_linklocal_ip_(false), layer2_forwarding_(true),
+        fabric_port_(true), need_linklocal_ip_(false), bridging_(true),
         layer3_forwarding_(true), mirror_enable_(false), ecmp_(false),
         dhcp_enable_(true), analyzer_name_(""),
         local_preference_(VmInterface::INVALID), oper_dhcp_options_(),
@@ -741,7 +747,7 @@ struct VmInterfaceConfigData : public VmInterfaceData {
     bool fabric_port_;
     // Does the port need link-local IP to be allocated
     bool need_linklocal_ip_;
-    bool layer2_forwarding_;
+    bool bridging_;
     bool layer3_forwarding_;
     bool mirror_enable_;
     //Is interface in active-active mode or active-backup mode

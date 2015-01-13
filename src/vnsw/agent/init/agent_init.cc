@@ -195,7 +195,26 @@ void AgentInit::InitModulesBase() {
     InitModules();
 }
 
+static void CreateVrfIndependentNextHop(Agent *agent) {
+
+    DiscardNH::Create();
+    DiscardNHKey key1;
+    NextHop *nh = static_cast<NextHop *>
+        (agent->nexthop_table()->FindActiveEntry(&key1));
+    agent->nexthop_table()->set_discard_nh(nh);
+
+    L2ReceiveNH::Create();
+    L2ReceiveNHKey key2;
+    nh = static_cast<NextHop *>
+                (agent->nexthop_table()->FindActiveEntry(&key2));
+    agent->nexthop_table()->set_l2_receive_nh(nh);
+}
+
 void AgentInit::CreateVrfBase() {
+    // Layer2 Receive routes are added on VRF creation. Ensure that Layer2
+    // Receive-NH which is independent of VRF is created first
+    CreateVrfIndependentNextHop(agent_.get());
+
     // Create the default VRF
     VrfTable *vrf_table = agent_->vrf_table();
 
@@ -206,18 +225,13 @@ void AgentInit::CreateVrfBase() {
     agent_->set_fabric_inet4_unicast_table(vrf->GetInet4UnicastRouteTable());
     agent_->set_fabric_inet4_multicast_table
         (vrf->GetInet4MulticastRouteTable());
-    agent_->set_fabric_l2_unicast_table(vrf->GetLayer2RouteTable());
+    agent_->set_fabric_l2_unicast_table(vrf->GetEvpnRouteTable());
 
     CreateVrf();
 }
 
 void AgentInit::CreateNextHopsBase() {
-    DiscardNH::Create();
-
-    DiscardNHKey key;
-    NextHop *nh = static_cast<NextHop *>
-                (agent_->nexthop_table()->FindActiveEntry(&key));
-    agent_->nexthop_table()->set_discard_nh(nh);
+    CreateVrfIndependentNextHop(agent_.get());
     CreateNextHops();
 }
 
