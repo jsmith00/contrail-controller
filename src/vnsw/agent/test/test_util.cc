@@ -1047,9 +1047,8 @@ bool RouteFindV6(const string &vrf_name, const string &addr, int plen) {
 
 bool L2RouteFind(const string &vrf_name, const MacAddress &mac,
                  const IpAddress &ip_addr) {
-    EvpnRouteEntry *route =
-        EvpnAgentRouteTable::FindRoute(Agent::GetInstance(), vrf_name, mac,
-                                         ip_addr);
+    BridgeRouteEntry *route =
+        BridgeAgentRouteTable::FindRoute(Agent::GetInstance(), vrf_name, mac);
     return (route != NULL);
 }
 
@@ -1095,22 +1094,22 @@ bool MCRouteFind(const string &vrf_name, const string &grp_addr) {
 
 }
 
-EvpnRouteEntry *L2RouteGet(const string &vrf_name, const MacAddress &mac,
+BridgeRouteEntry *L2RouteGet(const string &vrf_name, const MacAddress &mac,
                              const IpAddress &ip_addr) {
     Agent *agent = Agent::GetInstance();
     VrfEntry *vrf = agent->vrf_table()->FindVrfFromName(vrf_name);
     if (vrf == NULL)
         return NULL;
 
-    EvpnRouteKey key(agent->local_vm_peer(), vrf_name, mac, ip_addr, 0);
-    EvpnRouteEntry *route =
-        static_cast<EvpnRouteEntry *>
-        (static_cast<EvpnAgentRouteTable *>(vrf->
-             GetEvpnRouteTable())->FindActiveEntry(&key));
+    BridgeRouteKey key(agent->local_vm_peer(), vrf_name, mac);
+    BridgeRouteEntry *route =
+        static_cast<BridgeRouteEntry *>
+        (static_cast<BridgeAgentRouteTable *>(vrf->
+             GetBridgeRouteTable())->FindActiveEntry(&key));
     return route;
 }
 
-EvpnRouteEntry *L2RouteGet(const string &vrf_name,
+BridgeRouteEntry *L2RouteGet(const string &vrf_name,
                              const MacAddress &mac) {
     return L2RouteGet(vrf_name, mac, IpAddress());
 }
@@ -1189,7 +1188,7 @@ bool VlanNhFind(int id, uint16_t tag) {
     return (nh != NULL);
 }
 
-bool EvpnTunnelRouteAdd(const Peer *peer, const string &vm_vrf,
+bool BridgeTunnelRouteAdd(const Peer *peer, const string &vm_vrf,
                           TunnelType::TypeBmap bmap, const Ip4Address &server_ip,
                           uint32_t label, MacAddress &remote_vm_mac,
                           const IpAddress &vm_addr, uint8_t plen) {
@@ -1205,12 +1204,12 @@ bool EvpnTunnelRouteAdd(const Peer *peer, const string &vm_vrf,
     return true;
 }
 
-bool EvpnTunnelRouteAdd(const Peer *peer, const string &vm_vrf,
+bool BridgeTunnelRouteAdd(const Peer *peer, const string &vm_vrf,
                           TunnelType::TypeBmap bmap, const char *server_ip,
                           uint32_t label, MacAddress &remote_vm_mac,
                           const char *vm_addr, uint8_t plen) {
     boost::system::error_code ec;
-    EvpnTunnelRouteAdd(peer, vm_vrf, bmap,
+    BridgeTunnelRouteAdd(peer, vm_vrf, bmap,
                         Ip4Address::from_string(server_ip, ec), label, remote_vm_mac,
                         IpAddress::from_string(vm_addr, ec), plen);
 }
@@ -3025,9 +3024,9 @@ void FlushEvpnNextHop(BgpPeer *peer, std::string vrf_name,
     client->WaitForIdle();
 }
 
-EvpnRouteEntry *GetL2FloodRoute(const std::string &vrf_name) {
+BridgeRouteEntry *GetL2FloodRoute(const std::string &vrf_name) {
     MacAddress broadcast_mac("ff:ff:ff:ff:ff:ff");
-    EvpnRouteEntry *rt = L2RouteGet("vrf1", broadcast_mac);
+    BridgeRouteEntry *rt = L2RouteGet("vrf1", broadcast_mac);
     return rt;
 }
 
@@ -3079,4 +3078,63 @@ void DisableRpf(const std::string &vn_name, int vn_id) {
     strcpy(cbuf, buf.str().c_str());
     AddNode("virtual-network", vn_name.c_str(), vn_id, cbuf);
     client->WaitForIdle();
+}
+
+void AddInterfaceVrfAssignRule(const char *intf_name, int intf_id,
+                               const char *sip, const char *dip, int proto,
+                               const char *vrf, const char *ignore_acl) {
+        char buf[3000];
+        sprintf(buf,
+                "    <vrf-assign-table>\n"
+                "        <vrf-assign-rule>\n"
+                "            <match-condition>\n"
+                "                 <protocol>\n"
+                "                     %d\n"
+                "                 </protocol>\n"
+                "                 <src-address>\n"
+                "                     <subnet>\n"
+                "                        <ip-prefix>\n"
+                "                         %s\n"
+                "                        </ip-prefix>\n"
+                "                        <ip-prefix-len>\n"
+                "                         24\n"
+                "                        </ip-prefix-len>\n"
+                "                     </subnet>\n"
+                "                 </src-address>\n"
+                "                 <src-port>\n"
+                "                     <start-port>\n"
+                "                         %d\n"
+                "                     </start-port>\n"
+                "                     <end-port>\n"
+                "                         %d\n"
+                "                     </end-port>\n"
+                "                 </src-port>\n"
+                "                 <dst-address>\n"
+                "                     <subnet>\n"
+                "                        <ip-prefix>\n"
+                "                         %s\n"
+                "                        </ip-prefix>\n"
+                "                        <ip-prefix-len>\n"
+                "                         24\n"
+                "                        </ip-prefix-len>\n"
+                "                     </subnet>\n"
+                "                 </dst-address>\n"
+                "                 <dst-port>\n"
+                "                     <start-port>\n"
+                "                        %d\n"
+                "                     </start-port>\n"
+                "                     <end-port>\n"
+                "                        %d\n"
+                "                     </end-port>\n"
+                "                 </dst-port>\n"
+                "             </match-condition>\n"
+                "             <vlan-tag>0</vlan-tag>\n"
+                "             <routing-instance>%s</routing-instance>\n"
+                "             <ignore-acl>%s</ignore-acl>\n"
+                "         </vrf-assign-rule>\n"
+                "    </vrf-assign-table>\n",
+        proto, sip, 0, 65535, dip, 0, 65535, vrf,
+        ignore_acl);
+        AddNode("virtual-machine-interface", intf_name, intf_id, buf);
+        client->WaitForIdle();
 }

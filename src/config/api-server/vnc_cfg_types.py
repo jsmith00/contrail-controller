@@ -378,9 +378,33 @@ class VirtualMachineInterfaceServer(VirtualMachineInterfaceServerGen):
                                    for k, v in o.__dict__.iteritems()))
         mac_addrs_dict = json.loads(mac_addrs_json)
         obj_dict['virtual_machine_interface_mac_addresses'] = mac_addrs_dict
+
+        if 'virtual_machine_interface_allowed_address_pairs' in obj_dict:
+            aap_config = obj_dict['virtual_machine_interface_allowed_address_pairs']
+            if 'allowed_address_pair' in aap_config:
+                aaps = aap_config['allowed_address_pair']
+                for aap in aaps or []:
+                    if aap['mac'] == "":
+                        aap['mac'] = obj_dict['virtual_machine_interface_mac_addresses']['mac_address']
         return True, ""
     # end http_post_collection
 
+    @classmethod
+    def http_put(cls, id, fq_name, obj_dict, db_conn):
+        if 'virtual_machine_interface_allowed_address_pairs' in obj_dict:
+            vmi_id = {'uuid': id}
+            (read_ok, read_result) = db_conn.dbe_read('virtual-machine-interface', vmi_id)
+            if not read_ok:
+                return (False, (500, read_result))
+
+            aap_config = obj_dict['virtual_machine_interface_allowed_address_pairs']
+            if 'allowed_address_pair' in aap_config:
+                aaps = aap_config['allowed_address_pair']
+                for aap in aaps or []:
+                    if aap['mac'] == "":
+                        aap['mac'] = read_result['virtual_machine_interface_mac_addresses']['mac_address']
+        return True, ""
+    # end http_put
 # end class VirtualMachineInterfaceServer
 
 
@@ -999,3 +1023,42 @@ class NetworkPolicyServer(NetworkPolicyServerGen):
     # end _check_policy
 
 # end class NetworkPolicyServer
+
+class LogicalInterfaceServer(LogicalInterfaceServerGen):
+
+    @classmethod
+    def http_post_collection(cls, tenant_name, obj_dict, db_conn):
+        return cls._check_vlan(obj_dict, db_conn)
+    # end http_post_collection
+
+    @classmethod
+    def http_put(cls, id, fq_name, obj_dict, db_conn):
+        interface = {'uuid': id}
+        (read_ok, read_result) = db_conn.dbe_read('logical-interface', interface)
+        if not read_ok:
+            return (False, (500, read_result))
+
+        vlan = None
+        old_vlan = None
+        if 'logical_interface_vlan_tag' in read_result:
+            old_vlan = read_result.get('logical_interface_vlan_tag')
+        if 'logical_interface_vlan_tag' in obj_dict:
+            vlan = obj_dict['logical_interface_vlan_tag']
+        if vlan or old_vlan:
+            if vlan != old_vlan:
+                return (False, (403, "Cannot change Vlan id"))
+
+        return True, ""
+    # end http_put
+
+    @classmethod
+    def _check_vlan(cls, obj_dict, db_conn):
+        if 'logical_interface_vlan_tag' in obj_dict:
+            vlan = obj_dict['logical_interface_vlan_tag']
+            if vlan < 0 or vlan > 4094:
+                return (False, (403, "Invalid Vlan id"))
+
+        return True, ""
+    # end _check_vlan
+
+# end class LogicalInterfaceServer

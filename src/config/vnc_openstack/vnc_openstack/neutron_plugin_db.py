@@ -1746,12 +1746,9 @@ class DBInterface(object):
             aap_array = []
             if port_q['allowed_address_pairs']:
                 for address_pair in port_q['allowed_address_pairs']:
-                    mac_refs = \
-                        port_obj.get_virtual_machine_interface_mac_addresses()
                     mode = u'active-standby';
                     if 'mac_address' not in address_pair:
-                        if mac_refs:
-                            address_pair['mac_address'] = mac_refs.mac_address[0]
+                        address_pair['mac_address'] = ""
 
                     cidr = address_pair['ip_address'].split('/')
                     if len(cidr) == 1:
@@ -1762,20 +1759,6 @@ class DBInterface(object):
                         self._raise_contrail_exception(
                                'BadRequest', resource='port',
                                msg='Invalid address pair argument')
-                    ip_back_refs = port_obj.get_instance_ip_back_refs()
-                    if ip_back_refs:
-                        for ip_back_ref in ip_back_refs:
-                            iip_uuid = ip_back_ref['uuid']
-                            try:
-                                ip_obj = self._instance_ip_read(instance_ip_id=\
-                                                            ip_back_ref['uuid'])
-                            except NoIdError:
-                                continue
-                            ip_addr = ip_obj.get_instance_ip_address()
-                            if ((ip_addr == address_pair['ip_address']) and
-                                (mac_refs.mac_address[0] == address_pair['mac_address'])):
-                                self._raise_contrail_exception(
-                                       'AddressPairMatchesPortFixedIPAndMac')
                     aap = AllowedAddressPair(subnet,
                                              address_pair['mac_address'], mode)
                     aap_array.append(aap)
@@ -1909,9 +1892,13 @@ class DBInterface(object):
         if allowed_address_pairs and allowed_address_pairs.allowed_address_pair:
             address_pairs = []
             for aap in allowed_address_pairs.allowed_address_pair:
-                pair = {"ip_address": '%s/%s' % (aap.ip.get_ip_prefix(),
+                pair = {}
+                pair["mac_address"] = aap.mac
+                if aap.ip.get_ip_prefix_len() == 32:
+                    pair["ip_address"] = '%s' % (aap.ip.get_ip_prefix())
+                else:
+                    pair["ip_address"] = '%s/%s' % (aap.ip.get_ip_prefix(),
                                                  aap.ip.get_ip_prefix_len()),
-                        "mac_address": aap.mac}
                 address_pairs.append(pair)
             port_q_dict['allowed_address_pairs'] = address_pairs
 
@@ -3618,7 +3605,7 @@ class DBInterface(object):
             elif 'tenant_id' in filters:
                 all_project_ids = self._validate_project_ids(context,
                                                              filters['tenant_id'])
-            elif 'name' in filters:
+            elif 'name' in filters or 'device_owner' in filters:
                 all_project_ids = [str(uuid.UUID(context['tenant']))]
             elif 'id' in filters:
                 # TODO optimize
@@ -3640,6 +3627,9 @@ class DBInterface(object):
             for port_obj in ret_q_ports:
                 if not self._filters_is_present(filters, 'name',
                                                 port_obj['name']):
+                    continue
+                if not self._filters_is_present(filters, 'device_owner',
+                                                port_obj["device_owner"]):
                     continue
                 if 'fixed_ips' in filters and \
                     not self._port_fixed_ips_is_present(filters['fixed_ips'],

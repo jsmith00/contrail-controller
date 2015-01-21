@@ -12,6 +12,7 @@
 #include <bgp_schema_types.h>
 #include <vnc_cfg_types.h>
 
+#include <init/agent_init.h>
 #include <cfg/cfg_init.h>
 #include <cfg/cfg_listener.h>
 #include <route/route.h>
@@ -116,6 +117,13 @@ void VrfEntry::PostAdd() {
     rt_table_db_[type] = static_cast<AgentRouteTable *>
         (db->CreateTable(name_ + AgentRouteTable::GetSuffix(type)));
     rt_table_db_[type]->SetVrf(this);
+    ((VrfTable *)get_table())->dbtree_[type].insert(VrfTable::VrfDbPair(name_,
+                                                        rt_table_db_[type]));
+
+    type = Agent::BRIDGE;
+    rt_table_db_[type] = static_cast<AgentRouteTable *>
+        (db->CreateTable(name_ + AgentRouteTable::GetSuffix(type)));
+    rt_table_db_[type]->SetVrf(this);
     table->dbtree_[type].insert(VrfTable::VrfDbPair(name_, rt_table_db_[type]));
 
     type = Agent::INET6_UNICAST;
@@ -136,9 +144,9 @@ void VrfEntry::PostAdd() {
     UpdateVxlanId(agent, vxlan_id);
 
     // Add the L2 Receive routes for VRRP mac
-    EvpnAgentRouteTable *l2_table = static_cast<EvpnAgentRouteTable *>
-        (rt_table_db_[Agent::EVPN]);
-    l2_table->AddEvpnReceiveRoute(agent->local_vm_peer(), name_, 0,
+    BridgeAgentRouteTable *l2_table = static_cast<BridgeAgentRouteTable *>
+        (rt_table_db_[Agent::BRIDGE]);
+    l2_table->AddBridgeReceiveRoute(agent->local_vm_peer(), name_, 0,
                                     agent->vrrp_mac(), "");
 
     // Add the L2 Receive routes for xconnect interface to vhost
@@ -147,8 +155,20 @@ void VrfEntry::PostAdd() {
     const InetInterface *vhost = static_cast<const InetInterface *>
         (agent->vhost_interface());
     if (vhost && vhost->xconnect()) {
-        l2_table->AddEvpnReceiveRoute(agent->local_vm_peer(), name_, 0,
+        l2_table->AddBridgeReceiveRoute(agent->local_vm_peer(), name_, 0,
                                         vhost->xconnect()->mac(), "");
+    }
+
+    //Add receive route for vmware physical interface mac, so
+    //that packets hitting this mac gets routed(inter-vn traffic)
+    if (agent->isVmwareMode()) {
+        PhysicalInterfaceKey key(agent->params()->vmware_physical_port());
+        Interface *intf = static_cast<Interface *>
+            (agent->interface_table()->FindActiveEntry(&key));
+        if (intf) {
+             l2_table->AddBridgeReceiveRoute(agent->local_vm_peer(), name_, 0,
+                                             intf->mac(), "");
+        }
     }
 
     SendObjectLog(AgentLogEvent::ADD);
@@ -212,6 +232,10 @@ AgentRouteTable *VrfEntry::GetEvpnRouteTable() const {
     return rt_table_db_[Agent::EVPN];
 }
 
+AgentRouteTable *VrfEntry::GetBridgeRouteTable() const {
+    return rt_table_db_[Agent::BRIDGE];
+}
+
 InetUnicastAgentRouteTable *VrfEntry::GetInet6UnicastRouteTable() const {
     return static_cast<InetUnicastAgentRouteTable *>
         (rt_table_db_[Agent::INET6_UNICAST]);
@@ -225,7 +249,9 @@ bool VrfEntry::DBEntrySandesh(Sandesh *sresp, std::string &name) const {
         data.set_name(GetName());
         data.set_ucindex(vrf_id());
         data.set_mcindex(vrf_id());
+        data.set_evpnindex(vrf_id());
         data.set_l2index(vrf_id());
+        data.set_brindex(vrf_id());
         data.set_uc6index(vrf_id());
         std::string vrf_flags;
         if (flags() & VrfData::ConfigVrf)
@@ -280,7 +306,8 @@ bool VrfEntry::DeleteTimeout() {
     std::ostringstream str;
     str << "Unicast routes: " << rt_table_db_[Agent::INET4_UNICAST]->Size();
     str << " Mutlicast routes: " << rt_table_db_[Agent::INET4_MULTICAST]->Size();
-    str << " Evpn routes: " << rt_table_db_[Agent::EVPN]->Size();
+    str << " EVPN routes: " << rt_table_db_[Agent::EVPN]->Size();
+    str << " Bridge routes: " << rt_table_db_[Agent::BRIDGE]->Size();
     str << "Unicast v6 routes: " << rt_table_db_[Agent::INET6_UNICAST]->Size();
     str << " Reference: " << GetRefCount();
     OPER_TRACE(Vrf, "VRF delete failed, " + str.str(), name_);
@@ -358,15 +385,25 @@ bool VrfTable::Delete(DBEntry *entry, const DBRequest *req) {
         return false;
 
     // Delete the L2 Receive routes added by default
-    EvpnAgentRouteTable *l2_table = static_cast<EvpnAgentRouteTable *>
-        (vrf->rt_table_db_[Agent::EVPN]);
+    BridgeAgentRouteTable *l2_table = static_cast<BridgeAgentRouteTable *>
+        (vrf->rt_table_db_[Agent::BRIDGE]);
     l2_table->Delete(agent()->local_vm_peer(), vrf->GetName(),
-                     agent()->vrrp_mac(), IpAddress(), 0);
+                     agent()->vrrp_mac(), 0);
     const InetInterface *vhost = static_cast<const InetInterface *>
         (agent()->vhost_interface());
     if (vhost && vhost->xconnect()) {
         l2_table->Delete(agent()->local_vm_peer(), vrf->GetName(),
-                         vhost->xconnect()->mac(), IpAddress(), 0);
+                         vhost->xconnect()->mac(), 0);
+    }
+
+    if (agent()->isVmwareMode()) {
+        PhysicalInterfaceKey key(agent()->params()->vmware_physical_port());
+        Interface *intf = static_cast<Interface *>
+            (agent()->interface_table()->FindActiveEntry(&key));
+        if (intf) {
+             l2_table->Delete(agent()->local_vm_peer(), vrf->GetName(),
+                              intf->mac(), 0);
+        }
     }
 
     vrf->UpdateVxlanId(agent(), VxLanTable::kInvalidvxlan_id);
@@ -448,6 +485,10 @@ AgentRouteTable *VrfTable::GetInet4MulticastRouteTable(const string &vrf_name) {
 
 AgentRouteTable *VrfTable::GetEvpnRouteTable(const string &vrf_name) {
     return GetRouteTable(vrf_name, Agent::EVPN);
+}
+
+AgentRouteTable *VrfTable::GetBridgeRouteTable(const string &vrf_name) {
+    return GetRouteTable(vrf_name, Agent::BRIDGE);
 }
 
 InetUnicastAgentRouteTable *VrfTable::GetInet6UnicastRouteTable

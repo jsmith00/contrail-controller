@@ -265,6 +265,8 @@ class VncApiServer(VncApiServerGen):
         self._resource_classes['virtual-DNS'] = vnc_cfg_types.VirtualDnsServer
         self._resource_classes['virtual-DNS-record'] = \
             vnc_cfg_types.VirtualDnsRecordServer
+        self._resource_classes['logical-interface'] = \
+            vnc_cfg_types.LogicalInterfaceServer
 
         # TODO default-generation-setting can be from ini file
         self._resource_classes['bgp-router'].generate_default_instance = False
@@ -305,6 +307,9 @@ class VncApiServer(VncApiServerGen):
             link = LinkObject('action', self._base_url, act_res['uri'],
                               act_res['link_name'])
             self._homepage_links.append(link)
+
+        # Register for VN delete request. Disallow delete of system default VN
+        bottle.route('/virtual-network/<id>', 'DELETE', self.virtual_network_http_delete)
 
         bottle.route('/documentation/<filename:path>',
                      'GET', self.documentation_http_get)
@@ -438,6 +443,27 @@ class VncApiServer(VncApiServerGen):
 
     # end __init__
 
+    def _extensions_transform_request(self, request):
+        if not self._extension_mgrs['resourceApi'].names():
+            return None
+        return self._extension_mgrs['resourceApi'].map_method(
+                    'transform_request', request)
+    # end _extensions_transform_request
+
+    def _extensions_validate_request(self, request):
+        if not self._extension_mgrs['resourceApi'].names():
+            return None
+        return self._extension_mgrs['resourceApi'].map_method(
+                    'validate_request', request)
+    # end _extensions_validate_request
+
+    def _extensions_transform_response(self, request, response):
+        if not self._extension_mgrs['resourceApi'].names():
+            return None
+        return self._extension_mgrs['resourceApi'].map_method(
+                    'transform_response', request, response)
+    # end _extensions_transform_response
+
     @ignore_exceptions
     def _generate_rest_api_request_trace(self):
         method = bottle.request.method.upper()
@@ -475,10 +501,17 @@ class VncApiServer(VncApiServerGen):
     # Public Methods
     def route(self, uri, method, handler):
         def handler_trap_exception(*args, **kwargs):
-            trace = self._generate_rest_api_request_trace()
+            trace = None
             try:
+                self._extensions_transform_request(bottle.request)
+                self._extensions_validate_request(bottle.request)
+
+                trace = self._generate_rest_api_request_trace()
                 response = handler(*args, **kwargs)
                 self._generate_rest_api_response_trace(trace, response)
+
+                self._extensions_transform_response(bottle.request, response)
+
                 return response
             except Exception as e:
                 if trace:
@@ -529,6 +562,23 @@ class VncApiServer(VncApiServerGen):
     def get_pipe_start_app(self):
         return self._pipe_start_app
     # end get_pipe_start_app
+
+    # Check for the system created VN. Disallow such VN delete
+    def virtual_network_http_delete(self, id):
+        db_conn = self._db_conn
+        # if obj doesn't exist return early
+        try:
+            obj_type = db_conn.uuid_to_obj_type(id)
+            if obj_type != 'virtual_network':
+                bottle.abort(404, 'No virtual-network object found for id %s' %(id))
+            vn_name = db_conn.uuid_to_fq_name(id)
+        except NoIdError:
+            bottle.abort(404, 'ID %s does not exist' %(id))
+        if vn_name == cfgm_common.IP_FABRIC_VN_FQ_NAME or \
+           vn_name == cfgm_common.LINK_LOCAL_VN_FQ_NAME:
+            bottle.abort(409, 'Can not delete system created default virtual-network %s' %(id))
+        super(VncApiServer, self).virtual_network_http_delete(id)
+   # end
 
     def homepage_http_get(self):
         json_body = {}
@@ -991,6 +1041,7 @@ class VncApiServer(VncApiServerGen):
                 conf_sections=conf_sections, sandesh=self._sandesh)
             self._extension_mgrs['resourceApi'] = ExtensionManager(
                 'vnc_cfg_api.resourceApi',
+                propagate_map_exceptions=True,
                 api_server_ip=self._args.listen_ip_addr,
                 api_server_port=self._args.listen_port,
                 conf_sections=conf_sections, sandesh=self._sandesh)
