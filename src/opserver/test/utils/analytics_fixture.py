@@ -13,6 +13,8 @@ import urllib2
 import copy
 import os
 import json
+import gevent
+from fcntl import fcntl, F_GETFL, F_SETFL
 from operator import itemgetter
 from opserver_introspect_utils import VerificationOpsSrv
 from collector_introspect_utils import VerificationCollector
@@ -50,12 +52,25 @@ class Query(object):
 
 class Collector(object):
     def __init__(self, analytics_fixture, redis_uve, 
-                 logger, is_dup=False):
+                 logger, ipfix_port = False, syslog_port = False,
+                 protobuf_port = False, is_dup=False):
         self.analytics_fixture = analytics_fixture
-        self.listen_port = AnalyticsFixture.get_free_port()
-        self.http_port = AnalyticsFixture.get_free_port()
-        self.syslog_port = AnalyticsFixture.get_free_port()
-        self.protobuf_port = AnalyticsFixture.get_free_port()
+        self.syslog_port = syslog_port
+
+        # If these ports are needed, "start" should allocate them
+        if self.syslog_port:
+            self.syslog_port = 0
+        else:
+            self.syslog_port = -1
+        self.ipfix_port = ipfix_port
+        if self.ipfix_port:
+            self.ipfix_port = 0
+        else:
+            self.ipfix_port = -1
+
+        self.protobuf_port = protobuf_port
+        self.http_port = 0
+        self.listen_port = 0
         self.hostname = socket.gethostname()
         self._instance = None
         self._redis_uve = redis_uve
@@ -79,6 +94,10 @@ class Collector(object):
         return self.protobuf_port
     # end get_protobuf_port
 
+    def get_ipfix_port(self):
+        return self.ipfix_port
+    # end get_ipfix_port
+
     def get_generator_id(self):
         return self._generator_id
     # end get_generator_id
@@ -89,8 +108,12 @@ class Collector(object):
 
     def start(self):
         assert(self._instance == None)
-        self._log_file = '/tmp/vizd.messages.' + str(self.listen_port)
+        self._log_file = '/tmp/vizd.messages.' + str(self._redis_uve.port)
         subprocess.call(['rm', '-rf', self._log_file])
+        if (self.ipfix_port == 0):
+            self.ipfix_port = AnalyticsFixture.get_free_udp_port()
+        if (self.syslog_port == 0):
+            self.syslog_port = AnalyticsFixture.get_free_port()
         args = [self.analytics_fixture.builddir + '/analytics/vizd',
             '--DEFAULT.cassandra_server_list', '127.0.0.1:' +
             str(self.analytics_fixture.cassandra_port),
@@ -99,28 +122,48 @@ class Collector(object):
             '--COLLECTOR.port', str(self.listen_port),
             '--DEFAULT.http_server_port', str(self.http_port),
             '--DEFAULT.syslog_port', str(self.syslog_port),
-            '--DEFAULT.ipfix_port', str(self.analytics_fixture.ipfix_port),
-            '--COLLECTOR.protobuf_port', str(self.protobuf_port),
+            '--DEFAULT.ipfix_port', str(self.ipfix_port),
             '--DEFAULT.log_file', self._log_file]
         if self._is_dup is True:
             args.append('--DEFAULT.dup')
-        self._instance = subprocess.Popen(args, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE,
-                             preexec_fn = AnalyticsFixture.enable_core)
+        if (self.protobuf_port):
+            self.protobuf_port = AnalyticsFixture.get_free_port()
+            args.append('--COLLECTOR.protobuf_port')
+            args.append(str(self.protobuf_port))
+        else:
+            self.protobuf_port = None
+        
         self._logger.info('Setting up Vizd: %s' % (' '.join(args))) 
+        ports, self._instance = \
+                         self.analytics_fixture.start_with_ephemeral_ports(
+                         "contrail-collector", ["http","collector"],
+                         args, AnalyticsFixture.enable_core)
+        self.http_port = ports["http"]
+        self.listen_port = ports["collector"]
+        return self.verify_setup()
     # end start
+
+    def verify_setup(self):
+        if not self.http_port:
+            return False
+        if not self.listen_port:
+            return False
+        return True
 
     def stop(self):
         if self._instance is not None:
-            self._logger.info('Shutting down Vizd: 127.0.0.1:%d' 
-                              % (self.listen_port))
-            self._instance.terminate()
+            self._logger.info('Shutting down Vizd: 127.0.0.1:%s' 
+                              % str(self.listen_port))
+            if self._instance.poll() == None:
+                self._instance.terminate()
             (vizd_out, vizd_err) = self._instance.communicate()
             vcode = self._instance.returncode
             if vcode != 0:
                 self._logger.info('vizd returned %d' % vcode)
                 self._logger.info('vizd terminated stdout: %s' % vizd_out)
                 self._logger.info('vizd terminated stderr: %s' % vizd_err)
+                with open(self._log_file, 'r') as fin:
+                    self._logger.info(fin.read())
             subprocess.call(['rm', self._log_file])
             assert(vcode == 0)
             self._instance = None
@@ -134,8 +177,7 @@ class OpServer(object):
         self.primary_collector = primary_collector
         self.secondary_collector = secondary_collector
         self.analytics_fixture = analytics_fixture
-        self.listen_port = AnalyticsFixture.get_free_port()
-        self.http_port = AnalyticsFixture.get_free_port()
+        self.http_port = 0
         self.hostname = socket.gethostname()
         self._redis_port = redis_port
         self._instance = None
@@ -145,6 +187,7 @@ class OpServer(object):
             self.hostname = self.hostname+'dup'
         self._generator_id = self.hostname+':'+NodeTypeNames[NodeType.ANALYTICS]+\
                             ':'+ModuleNames[Module.OPSERVER]+':0'
+        self.listen_port = AnalyticsFixture.get_free_port()
     # end __init__
 
     def set_primary_collector(self, collector):
@@ -183,17 +226,26 @@ class OpServer(object):
         if self._is_dup:
             args.append('--dup')
 
-        self._instance = subprocess.Popen(args,
-                                          stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE)
         self._logger.info('Setting up OpServer: %s' % ' '.join(args))
+        ports, self._instance = \
+                         self.analytics_fixture.start_with_ephemeral_ports(
+                         "contrail-analytics-api", ["http"],
+                         args, None)
+        self.http_port = ports["http"]
+        return self.verify_setup()
     # end start
+
+    def verify_setup(self):
+        if not self.http_port:
+            return False
+        return True
 
     def stop(self):
         if self._instance is not None:
             self._logger.info('Shutting down OpServer 127.0.0.1:%d' 
                               % (self.listen_port))
-            self._instance.terminate()
+            if self._instance.poll() == None:
+                self._instance.terminate()
             (op_out, op_err) = self._instance.communicate()
             ocode = self._instance.returncode
             if ocode != 0:
@@ -220,7 +272,7 @@ class QueryEngine(object):
         self.secondary_collector = secondary_collector
         self.analytics_fixture = analytics_fixture
         self.listen_port = AnalyticsFixture.get_free_port()
-        self.http_port = AnalyticsFixture.get_free_port()
+        self.http_port = 0
         self.hostname = socket.gethostname()
         self._instance = None
         self._logger = logger
@@ -257,24 +309,34 @@ class QueryEngine(object):
             args.append(self.secondary_collector)
         if analytics_start_time is not None:
             args += ['--DEFAULT.start_time', str(analytics_start_time)]
-        self._instance = subprocess.Popen(args,
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE,
-                             preexec_fn = AnalyticsFixture.enable_core)
         self._logger.info('Setting up contrail-query-engine: %s' % ' '.join(args))
+        ports, self._instance = \
+                         self.analytics_fixture.start_with_ephemeral_ports(
+                         "contrail-query-engine", ["http"],
+                         args, None)
+        self.http_port = ports["http"]
+        return self.verify_setup()
     # end start
+
+    def verify_setup(self):
+        if not self.http_port:
+            return False
+        return True
 
     def stop(self):
         if self._instance is not None:
             self._logger.info('Shutting down contrail-query-engine: 127.0.0.1:%d'
                               % (self.listen_port))
-            self._instance.terminate()
+            if self._instance.poll() == None:
+                self._instance.terminate()
             (qe_out, qe_err) = self._instance.communicate()
             rcode = self._instance.returncode
             if rcode != 0:
                 self._logger.info('contrail-query-engine returned %d' % rcode)
                 self._logger.info('contrail-query-engine terminated stdout: %s' % qe_out)
                 self._logger.info('contrail-query-engine terminated stderr: %s' % qe_err)
+                with open(self._log_file, 'r') as fin:
+                    self._logger.info(fin.read())
             subprocess.call(['rm', self._log_file])
             assert(rcode == 0)
             self._instance = None
@@ -283,19 +345,31 @@ class QueryEngine(object):
 # end class QueryEngine
 
 class Redis(object):
-    def __init__(self,builddir):
+    def __init__(self, port, builddir):
         self.builddir = builddir
-        self.port = AnalyticsFixture.get_free_port()
+        self.port = port
+        if self.port == -1:
+            self.use_global = False
+        else:
+            self.use_global = True
         self.running = False
     # end __init__
 
     def start(self):
         assert(self.running == False)
         self.running = True
-        mockredis.start_redis(self.port,self.builddir+'/testroot/bin/redis-server') 
-    # end start
+        if not self.use_global:
+            if self.port == -1:
+                self.port = AnalyticsFixture.get_free_port()
+            mockredis.start_redis(
+                self.port, self.builddir+'/testroot/bin/redis-server') 
+        else:
+            redish = redis.StrictRedis("127.0.0.1", self.port)
+            redish.flushall()
 
+    # end start
     def stop(self):
+        assert(not self.use_global)
         if self.running:
             mockredis.stop_redis(self.port)
             self.running =  False
@@ -305,11 +379,16 @@ class Redis(object):
 
 class AnalyticsFixture(fixtures.Fixture):
 
-    def __init__(self, logger, builddir, cassandra_port, ipfix_port = -1,
-                 noqed=False, collector_ha_test=False): 
+    def __init__(self, logger, builddir, redis_port, cassandra_port,
+                 ipfix_port = False, syslog_port = False, protobuf_port = False,
+                 noqed=False, collector_ha_test=False):
+
         self.builddir = builddir
+        self.redis_port = redis_port
         self.cassandra_port = cassandra_port
         self.ipfix_port = ipfix_port
+        self.syslog_port = syslog_port
+        self.protobuf_port = protobuf_port
         self.logger = logger
         self.noqed = noqed
         self.collector_ha_test = collector_ha_test
@@ -317,33 +396,45 @@ class AnalyticsFixture(fixtures.Fixture):
     def setUp(self):
         super(AnalyticsFixture, self).setUp()
 
-        self.redis_uves = [Redis(self.builddir)]
+        self.redis_uves = [Redis(self.redis_port, self.builddir)]
         self.redis_uves[0].start()
 
-        self.collectors = [Collector(self, self.redis_uves[0], self.logger)] 
-        self.collectors[0].start()
-
-        self.opserver_port = None
+        self.opserver = None
+        self.query_engine = None
+        self.collectors = [Collector(self, self.redis_uves[0], self.logger,
+                           ipfix_port = self.ipfix_port,
+                           syslog_port = self.syslog_port,
+                           protobuf_port = self.protobuf_port)] 
+        if not self.collectors[0].start():
+            self.logger.error("Collector did NOT start")
+            return 
+        
         if self.verify_collector_gen(self.collectors[0]):
             primary_collector = self.collectors[0].get_addr()
             secondary_collector = None
             if self.collector_ha_test:
-                self.redis_uves.append(Redis(self.builddir))
+                self.redis_uves.append(Redis(-1, self.builddir))
                 self.redis_uves[1].start()
                 self.collectors.append(Collector(self, self.redis_uves[1],
-                                                 self.logger, True))
-                self.collectors[1].start()
+                                                 self.logger, is_dup=True))
+                if not self.collectors[1].start():
+                    self.logger.error("Secondary Collector did NOT start")
                 secondary_collector = self.collectors[1].get_addr()
             self.opserver = OpServer(primary_collector, secondary_collector, 
                                      self.redis_uves[0].port, 
                                      self, self.logger)
-            self.opserver.start()
+            if not self.opserver.start():
+                self.logger.error("OpServer did NOT start")
+
             self.opserver_port = self.opserver.listen_port
-            self.query_engine = QueryEngine(primary_collector, 
+            if not self.noqed:
+                self.query_engine = QueryEngine(primary_collector, 
                                             secondary_collector, 
                                             self, self.logger)
-            if not self.noqed:
-                self.query_engine.start()
+                if not self.query_engine.start():
+                    self.logger.error("QE did NOT start")
+        else:
+            self.logger.error("Collector UVE not in Redis")
     # end setUp
 
     def get_collector(self):
@@ -361,15 +452,16 @@ class AnalyticsFixture(fixtures.Fixture):
 
     def verify_on_setup(self):
         result = True
-        if self.opserver_port is None:
+        if self.opserver is None:
             result = result and False
-            self.logger.error("Collector UVE not in Redis")
-        if self.opserver_port is None:
-            result = result and False
-            self.logger.error("OpServer not started")
+            self.logger.error("AnalyticsAPI not functional without OpServer")
+            return result
+        if not self.noqed:
+            if not self.query_engine:
+                self.logger.error("AnalyticsAPI not functional without QE")
         if not self.verify_opserver_api():
             result = result and False
-            self.logger.error("OpServer not responding")
+            self.logger.error("AnalyticsAPI not responding")
         self.verify_is_run = True
         return result
 
@@ -380,6 +472,8 @@ class AnalyticsFixture(fixtures.Fixture):
         with the collector within vizd
         '''
         vcl = VerificationCollector('127.0.0.1', collector.http_port)
+        self.logger.info("verify_collector_gen port %s : %s" % \
+            (collector.http_port, str(vcl)))
         try:
             genlist = vcl.get_generators()['generators']
             src = genlist[0]['source']
@@ -1693,11 +1787,13 @@ class AnalyticsFixture(fixtures.Fixture):
             self.opserver.stop()
         except:
             pass
-        self.query_engine.stop()
+        if self.query_engine:
+            self.query_engine.stop()
         for collector in self.collectors:
             collector.stop()
         for redis_uve in self.redis_uves:
-            redis_uve.stop()
+            if not redis_uve.use_global:
+                redis_uve.stop()
         super(AnalyticsFixture, self).cleanUp()
 
     @staticmethod
@@ -1707,6 +1803,55 @@ class AnalyticsFixture(fixtures.Fixture):
         cport = cs.getsockname()[1]
         cs.close()
         return cport
+
+    @staticmethod
+    def get_free_udp_port():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("", 0))
+        u_port = sock.getsockname()[1]
+        sock.close()
+        return u_port
+
+    def start_with_ephemeral_ports(self, modname, pnames, args, preexec):
+
+        pipes = {}
+        for pname in pnames: 
+            pipe_name = '/tmp/%s.%d.%s_port' % (modname, os.getpid(), pname)
+            self.logger.info("Read %s Port from %s" % (pname, pipe_name))
+            #import pdb; pdb.set_trace()
+            try:
+                os.unlink(pipe_name)
+            except:
+                pass
+            os.mkfifo(pipe_name)
+            pipein = open(pipe_name, 'r+')
+            flags = fcntl(pipein, F_GETFL)
+            fcntl(pipein, F_SETFL, flags | os.O_NONBLOCK)
+            pipes[pname] = pipein , pipe_name
+            
+        instance = subprocess.Popen(args, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,
+                             preexec_fn = preexec)
+      
+        pmap = {} 
+        for k,v in pipes.iteritems(): 
+            tries = 30
+            port = None
+            pipein , pipe_name = v
+            while tries >= 0 and instance.poll() == None:
+                try:
+                    line = pipein.readline()[:-1]
+                    port = int(line)
+                    self.logger.info("Found %s_port %d" % (k, port))
+                    tries = -1
+                except:
+                    self.logger.info("No %s_port found" % k)
+                    gevent.sleep(1)
+                    tries = tries - 1
+            pipein.close()
+            os.unlink(pipe_name)
+            pmap[k] = port
+        return pmap, instance
 
     @staticmethod
     def enable_core():
