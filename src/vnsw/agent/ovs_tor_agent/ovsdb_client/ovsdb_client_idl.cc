@@ -141,6 +141,10 @@ OvsdbClientIdl::~OvsdbClientIdl() {
 }
 
 void OvsdbClientIdl::SendMointorReq() {
+    if (deleted_) {
+        OVSDB_TRACE(Trace, "IDL deleted skipping Monitor Request");
+        return;
+    }
     OVSDB_TRACE(Trace, "Sending Monitor Request");
     SendJsonRpc(ovsdb_wrapper_idl_encode_monitor_request(idl_));
 }
@@ -213,6 +217,19 @@ struct ovsdb_idl_txn *OvsdbClientIdl::CreateTxn(OvsdbEntryBase *entry) {
 void OvsdbClientIdl::DeleteTxn(struct ovsdb_idl_txn *txn) {
     pending_txn_.erase(txn);
     ovsdb_wrapper_idl_txn_destroy(txn);
+}
+
+// API to trigger ovs row del followed by add
+// used by OvsdbEntry on catastrophic change event, which
+// results in emulating a delete followed by add
+void OvsdbClientIdl::NotifyDelAdd(struct ovsdb_idl_row *row) {
+    int i = ovsdb_wrapper_row_type(row);
+    if (i >= OvsdbClientIdl::OVSDB_TYPE_COUNT)
+        return;
+    if (callback_[i] != NULL) {
+        callback_[i](OvsdbClientIdl::OVSDB_DEL, row);
+        callback_[i](OvsdbClientIdl::OVSDB_ADD, row);
+    }
 }
 
 Ip4Address OvsdbClientIdl::tsn_ip() {

@@ -14,6 +14,8 @@ from cfgm_common.zkclient import ZookeeperClient,IndexAllocator
 from gevent import monkey
 monkey.patch_all()
 import sys
+reload(sys)
+sys.setdefaultencoding('UTF8')
 import requests
 import ConfigParser
 import cgitb
@@ -77,6 +79,7 @@ _PROTO_STR_TO_NUM = {
     'any': 'any',
 }
 
+SGID_MIN_ALLOC = common.SGID_MIN_ALLOC
 _sandesh = None
 
 # connection to api-server
@@ -236,7 +239,13 @@ class VirtualNetworkST(DictST):
                 self.dynamic_acl = acl_obj
 
         self.ipams = {}
-        self.rt_list = set()
+        rt_list = self.obj.get_route_target_list()
+        if rt_list:
+            self.rt_list = set(rt_list.get_route_target())
+            for rt in self.rt_list:
+                RouteTargetST.locate(rt)
+        else:
+            self.rt_list = set()
         self._route_target = 0
         self.route_table_refs = set()
         self.route_table = {}
@@ -569,6 +578,15 @@ class VirtualNetworkST(DictST):
                 else:
                     rinst_obj.set_route_target(rtgt_obj, inst_tgt_data)
                     rinst_obj.set_routing_instance_is_default(is_default)
+                    for rt in self.rt_list:
+                        rtgt_obj = RouteTarget(rt)
+                        if is_default:
+                            inst_tgt_data = InstanceTargetType()
+                        else:
+                            inst_tgt_data = InstanceTargetType(
+                                import_export="export")
+                        rinst_obj.add_route_target(rtgt_obj, inst_tgt_data)
+
                     _vnc_lib.routing_instance_update(rinst_obj)
             except NoIdError:
                 rinst_obj = None
@@ -576,6 +594,14 @@ class VirtualNetworkST(DictST):
                 rinst_obj = RoutingInstance(rinst_name, self.obj)
                 rinst_obj.set_route_target(rtgt_obj, inst_tgt_data)
                 rinst_obj.set_routing_instance_is_default(is_default)
+                for rt in self.rt_list:
+                    rtgt_obj = RouteTarget(rt)
+                    if is_default:
+                        inst_tgt_data = InstanceTargetType()
+                    else:
+                        inst_tgt_data = InstanceTargetType(
+                            import_export="export")
+                    rinst_obj.add_route_target(rtgt_obj, inst_tgt_data)
                 _vnc_lib.routing_instance_create(rinst_obj)
         except (BadRequest, HttpError) as e:
             _sandesh._logger.error(
@@ -1186,11 +1212,8 @@ class SecurityGroupST(DictST):
     def __init__(self, name):
         self.name = name
         self.obj = _vnc_lib.security_group_read(fq_name_str=name)
-        if not self.obj.get_security_group_id():
-            # TODO handle overflow + check alloc'd id is not in use
-            sg_id_num = self._sg_id_allocator.alloc(name)
-            self.obj.set_security_group_id(sg_id_num)
-            _vnc_lib.security_group_update(self.obj)
+        self.config_sgid = None
+        self.sg_id = None
         self.ingress_acl = None
         self.egress_acl = None
         acls = self.obj.get_access_control_lists()
@@ -1203,12 +1226,46 @@ class SecurityGroupST(DictST):
                     id=acl['uuid'])
             else:
                 _vnc_lib.access_control_list_delete(id=acl['uuid'])
+        config_id = self.obj.get_configured_security_group_id() or 0
+        self.set_configured_security_group_id(config_id)
         self.update_policy_entries(self.obj.get_security_group_entries())
+    # end __init__
+
+    def set_configured_security_group_id(self, config_id):
+        if self.config_sgid == config_id:
+            return
+        self.config_sgid = config_id
+        sg_id = self.obj.get_security_group_id()
+        if config_id:
+            if sg_id is not None:
+                if int(sg_id) > SGID_MIN_ALLOC:
+                    self._sg_id_allocator.delete(sg_id - SGID_MIN_ALLOC)
+                else:
+                    if self.name == self._sg_id_allocator.read(sg_id):
+                        self._sg_id_allocator.delete(sg_id)
+            self.obj.set_security_group_id(str(config_id))
+        else:
+            do_alloc = False
+            if sg_id is not None:
+                if int(sg_id) < SGID_MIN_ALLOC:
+                    if self.name == self._sg_id_allocator.read(int(sg_id)):
+                        self.obj.set_security_group_id(int(sg_id) + SGID_MIN_ALLOC)
+                    else:
+                        do_alloc = True
+            else:
+                do_alloc = True
+            if do_alloc:
+                sg_id_num = self._sg_id_allocator.alloc(self.name)
+                self.obj.set_security_group_id(sg_id_num + SGID_MIN_ALLOC)
+        if sg_id != self.obj.get_security_group_id():
+            _vnc_lib.security_group_update(self.obj)
+        from_value = self.sg_id or self.name
         for sg in self._dict.values():
-            sg.update_acl(from_value=name,
+            sg.update_acl(from_value=from_value,
                           to_value=self.obj.get_security_group_id())
         # end for sg
-    # end __init__
+        self.sg_id = self.obj.get_security_group_id()
+    # end set_configured_security_group_id
 
     @classmethod
     def delete(cls, name):
@@ -1218,8 +1275,11 @@ class SecurityGroupST(DictST):
         _vnc_lib.access_control_list_delete(id=sg.ingress_acl.uuid)
         _vnc_lib.access_control_list_delete(id=sg.egress_acl.uuid)
         sg_id = sg.obj.get_security_group_id()
-        if sg_id is not None:
-            cls._sg_id_allocator.delete(sg.obj.get_security_group_id())
+        if sg_id is not None and not sg.config_sgid:
+            if sg_id < SGID_MIN_ALLOC:
+                cls._sg_id_allocator.delete(sg_id)
+            else:
+                cls._sg_id_allocator.delete(sg_id-SGID_MIN_ALLOC)
         del cls._dict[name]
         for sg in cls._dict.values():
             sg.update_acl(from_value=sg_id, to_value=name)
@@ -2662,6 +2722,15 @@ class SchemaTransformer(object):
             sg.update_policy_entries(None)
     # end delete_security_group_entries
 
+    def add_configured_security_group_id(self, idents, meta):
+        sg_name = idents['security-group']
+        sg = SecurityGroupST.locate(sg_name)
+        config_id = int(meta.text)
+
+        if sg:
+            sg.set_configured_security_group_id(config_id)
+    # end add_configured_security_group_id
+
     def add_network_policy_entries(self, idents, meta):
         # Network policy entries arrived or modified
         policy_name = idents['network-policy']
@@ -3015,6 +3084,7 @@ class SchemaTransformer(object):
                         action = arule.get_action_list()
                         if action.simple_action == 'deny':
                             continue
+                        connected_network = None
                         if (match.dst_address.virtual_network in
                                 [network_name, "any"]):
                             connected_network =\
@@ -3031,7 +3101,7 @@ class SchemaTransformer(object):
                             action.apply_service = []
                             continue
 
-                        if action.simple_action:
+                        if connected_network and action.simple_action:
                             virtual_network.add_connection(connected_network)
 
                     # end for acl_rule_list
