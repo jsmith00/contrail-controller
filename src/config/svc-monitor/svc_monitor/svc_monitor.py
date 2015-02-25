@@ -151,7 +151,8 @@ class SvcMonitor(object):
                     self._err_file, maxBytes=64*1024, backupCount=2)
                 self._svc_err_logger.addHandler(handler)
         except IOError:
-            self.logger.log("Failed to open trace file %s" % self._err_file)
+            self.logger.log_warning("Failed to open trace file %s" %
+                self._err_file)
 
         # Connect to Rabbit and Initialize cassandra connection
         self._connect_rabbit()
@@ -231,6 +232,11 @@ class SvcMonitor(object):
             cgitb.Hook(file=string_buf, format="text").handle(sys.exc_info())
             self.config_log(string_buf.getvalue(), level=SandeshLevel.SYS_ERR)
 
+        for sas_id in dependency_tracker.resources.get('service_appliance_set', []):
+            sas_obj = ServiceApplianceSetSM.get(sas_id)
+            if sas_obj is not None:
+                sas_obj.add()
+
         for lb_pool_id in dependency_tracker.resources.get('loadbalancer_pool', []):
             lb_pool = LoadbalancerPoolSM.get(lb_pool_id)
             if lb_pool is not None:
@@ -300,9 +306,8 @@ class SvcMonitor(object):
             self._vnc_lib, self.db, self.logger,
             self.vrouter_scheduler, self._nova_client, self._args)
 
-        # TODO activate the code
         # load a loadbalancer agent
-        # self.loadbalancer_agent = LoadbalancerAgent(self, self._vnc_lib, self._args)
+        self.loadbalancer_agent = LoadbalancerAgent(self, self._vnc_lib, self._args)
 
         # Read the cassandra and populate the entry in ServiceMonitor DB
         self.sync_sm()
@@ -454,6 +459,20 @@ class SvcMonitor(object):
             for fq_name, uuid in project_list:
                 prj = ProjectSM.locate(uuid)
 
+        ok, sas_list = self._cassandra._cassandra_service_appliance_set_list()
+        if not ok:
+            pass
+        else:
+            for fq_name, uuid in sas_list:
+                sas = ServiceApplianceSetSM.locate(uuid)
+
+        ok, sa_list = self._cassandra._cassandra_service_appliance_list()
+        if not ok:
+            pass
+        else:
+            for fq_name, uuid in sa_list:
+                sa = ServiceApplianceSM.locate(uuid)
+
         ok, domain_list = self._cassandra._cassandra_domain_list()
         if not ok:
             pass
@@ -482,8 +501,12 @@ class SvcMonitor(object):
                         continue
                     self.check_link_si_to_vm(vm, vmi)
 
+        # Load the loadbalancer driver
+        self.loadbalancer_agent.load_drivers()
+
         for lb_pool in LoadbalancerPoolSM.values():
             lb_pool.add()
+
 
         self._db_resync_done.set()
     # end sync_sm
@@ -497,8 +520,8 @@ class SvcMonitor(object):
         domain_name = 'default-domain'
         domain_fq_name = [domain_name]
         st_fq_name = [domain_name, st_name]
-        self.logger.log("Creating %s %s hypervisor %s" %
-                         (domain_name, st_name, hypervisor_type))
+        self.logger.log_info("Creating %s %s hypervisor %s" %
+            (domain_name, st_name, hypervisor_type))
 
         domain_obj = None
         for domain in DomainSM.values():
@@ -508,12 +531,13 @@ class SvcMonitor(object):
                 domain_obj.fq_name = domain_fq_name
                 break
         if not domain_obj:
-            self.logger.log("%s domain not found" % (domain_name))
+            self.logger.log_error("%s domain not found" % (domain_name))
             return
 
         for st in ServiceTemplateSM.values():
             if st.fq_name == st_fq_name:
-                self.logger.log("%s exists uuid %s" % (st.name, str(st.uuid)))
+                self.logger.log_info("%s exists uuid %s" %
+                    (st.name, str(st.uuid)))
                 return
 
         st_obj = ServiceTemplate(name=st_name, domain_obj=domain)
@@ -555,7 +579,8 @@ class SvcMonitor(object):
         except Exception as e:
             print e
 
-        self.logger.log("%s created with uuid %s" % (st_name, str(st_uuid)))
+        self.logger.log_info("%s created with uuid %s" %
+            (st_name, str(st_uuid)))
     #_create_default_analyzer_template
 
     def check_link_si_to_vm(self, vm, vmi):
@@ -584,10 +609,11 @@ class SvcMonitor(object):
         elif st.virtualization_type == 'vrouter-instance':
             self.vrouter_manager.create_service(st, si)
         else:
-            self.logger.log("Unkown virt type: %s" % st.virtualization_type)
+            self.logger.log_error("Unknown virt type: %s" %
+                st.virtualization_type)
 
     def _delete_service_instance(self, vm):
-        self.logger.log("Deleting VM %s %s" %
+        self.logger.log_info("Deleting VM %s %s" %
             ((':').join(vm.proj_fq_name), vm.uuid))
 
         if vm.virtualization_type == svc_info.get_vm_instance_type():
@@ -630,7 +656,7 @@ class SvcMonitor(object):
 
     def _delete_shared_vn(self, vn_uuid):
         try:
-            self.logger.log("Deleting vn %s" % (vn_uuid))
+            self.logger.log_info("Deleting vn %s" % (vn_uuid))
             self._vnc_lib.virtual_network_delete(id=vn_uuid)
         except (NoIdError, RefsExistError):
             pass

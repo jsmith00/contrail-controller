@@ -24,6 +24,7 @@ const string SERVICE_DISCOVERY = "contrail-discovery:0"
 const string SERVICE_STORAGE_STATS_MGR = "contrail-storage-stats"
 const string SERVICE_IPMI_STATS_MGR = "contrail-ipmi-stats"
 const string SERVICE_INVENTORY_AGENT = "contrail-inventory-agent"
+const string SERVICE_CONTRAIL_DATABASE = "contrail-database"
 
 // NodeMgr names
 const string SERVICE_COMPUTE_NODE_MGR = "contrail-vrouter-nodemgr"
@@ -174,6 +175,18 @@ enum Module {
     INVENTORY_AGENT,
     ALARM_GENERATOR,
     MAX_MODULE,
+}
+
+enum VrouterAgentType {
+    VROUTER_AGENT_TOR,
+    VROUTER_AGENT_TSN,
+    VROUTER_AGENT_EMBEDDED
+}
+
+const map<byte, string> VrouterAgentTypeMap = {
+    VrouterAgentType.VROUTER_AGENT_TOR     : 'TOR',
+    VrouterAgentType.VROUTER_AGENT_TSN     : 'TSN',
+    VrouterAgentType.VROUTER_AGENT_EMBEDDED: 'VROUTER'
 }
 
 const string MODULE_CONTROL_NODE_NAME = SERVICE_CONTROL_NODE
