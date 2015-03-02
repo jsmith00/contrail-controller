@@ -28,6 +28,9 @@ class BgpRouterDM(DBBase):
             obj = self.read_obj(self.uuid)
         self.name = obj['fq_name'][-1]
         self.params = obj['bgp_router_parameters']
+        if self.params is not None:
+            if self.params.get('autonomous_system') is None:
+                self.params['autonomous_system'] = GlobalSystemConfigDM.get_global_asn()
         self.update_single_ref('physical_router', obj)
         new_peers = {}
         for ref in obj.get('bgp_router_refs', []):
@@ -74,9 +77,11 @@ class PhysicalRouterDM(DBBase):
         self.uuid = uuid
         self.virtual_networks = set()
         self.bgp_router = None
+        self.config_manager = None
         self.update(obj_dict)
         self.config_manager = PhysicalRouterConfig(
-            self.management_ip, self.user_credentials, self._logger)
+            self.management_ip, self.user_credentials, self.vendor,
+            self.product, self.vnc_managed, self._logger)
     # end __init__
 
     def update(self, obj=None):
@@ -84,6 +89,8 @@ class PhysicalRouterDM(DBBase):
             obj = self.read_obj(self.uuid)
         self.management_ip = obj.get('physical_router_management_ip')
         self.vendor = obj.get('physical_router_vendor_name')
+        self.product = obj.get('physical_router_product_name')
+        self.vnc_managed = obj.get('physical_router_vnc_managed')
         self.user_credentials = obj.get('physical_router_user_credentials')
         self.update_single_ref('bgp_router', obj)
         self.update_multiple_refs('virtual_network', obj)
@@ -91,6 +98,10 @@ class PhysicalRouterDM(DBBase):
                                         obj.get('physical_interfaces', [])])
         self.logical_interfaces = set([li['uuid'] for li in
                                        obj.get('logical_interfaces', [])])
+        if self.config_manager is not None:
+            self.config_manager.update(
+                self.management_ip, self.user_credentials, self.vendor,
+                self.product, self.vnc_managed)
     # end update
 
     @classmethod
@@ -112,7 +123,7 @@ class PhysicalRouterDM(DBBase):
                 peer = BgpRouterDM.get(peer_uuid)
                 if peer is None:
                     continue
-                external = (bgp_router.params['autonomous_system'] ==
+                external = (bgp_router.params['autonomous_system'] !=
                             peer.params['autonomous_system'])
                 self.config_manager.add_bgp_peer(peer.params['address'],
                                                  params, external)
@@ -174,6 +185,33 @@ class PhysicalRouterDM(DBBase):
     # end push_config
 # end PhysicalRouterDM
 
+class GlobalSystemConfigDM(DBBase):
+    _dict = {}
+    obj_type = 'global_system_config'
+    global_asn = None
+
+    def __init__(self, uuid, obj_dict=None):
+        self.uuid = uuid
+        self.update(obj_dict)
+    # end __init__
+
+    def update(self, obj=None):
+        if obj is None:
+            obj = self.read_obj(self.uuid)
+        GlobalSystemConfigDM.global_asn = obj.get('autonomous_system')
+    # end update
+
+    @classmethod
+    def get_global_asn(cls):
+        return cls.global_asn
+
+    @classmethod
+    def delete(cls, uuid):
+        if uuid not in cls._dict:
+            return
+        obj = cls._dict[uuid]
+    # end delete
+# end GlobalSystemConfigDM
 
 class PhysicalInterfaceDM(DBBase):
     _dict = {}

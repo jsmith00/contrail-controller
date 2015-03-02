@@ -13,6 +13,7 @@ monkey.patch_all()
 import sys
 import json
 import socket
+import pprint
 try:
     from collections import OrderedDict
 except ImportError:
@@ -34,7 +35,7 @@ from partition_handler import PartitionHandler, UveStreamProc
 from sandesh.alarmgen_ctrl.ttypes import PartitionOwnershipReq, \
     PartitionOwnershipResp, PartitionStatusReq, UVECollInfo, UVEGenInfo, \
     PartitionStatusResp, UVEAlarms, AlarmElement, UVETableAlarmReq, \
-    UVETableAlarmResp, UVEAlarmInfo, AlarmgenTrace
+    UVETableAlarmResp, UVEAlarmInfo, AlarmgenTrace, AlarmTrace, UVEKeyInfo
 from sandesh.discovery.ttypes import CollectorTrace
 
 from opserver_util import ServicePoller
@@ -54,7 +55,7 @@ class Controller(object):
         node_type = Module2NodeType[module]
         self._node_type_name = NodeTypeNames[node_type]
         self._hostname = socket.gethostname()
-        self._instance_id = '0'
+        self._instance_id = self._conf.worker_id()
         sandesh_global.init_generator(self._moduleid, self._hostname,
                                       self._node_type_name, self._instance_id,
                                       self._conf.collectors(), 
@@ -107,7 +108,12 @@ class Controller(object):
 
         self._us = UVEServer(None, self._logger, self._conf.redis_password())
 
+        self._workers = {}
+
         self.disc = None
+        self._libpart_name = self._hostname + ":" + self._instance_id
+        self._libpart = None
+        self._partset = set()
         if self._conf.discovery()['server']:
             import discoveryclient.client as client 
             data = {
@@ -122,6 +128,7 @@ class Controller(object):
                           % (str(self._conf.discovery()), str(data)))
             self.disc.publish(ALARM_GENERATOR_SERVICE_NAME, data)
         else:
+            # If there is no discovery service, use fixed redis_uve list
             redis_uve_list = []
             try:
                 for redis_uve in self._conf.redis_uve_list():
@@ -133,11 +140,51 @@ class Controller(object):
             else:
                 self._us.update_redis_uve_list(redis_uve_list)
 
+            # If there is no discovery service, use fixed alarmgen list
+            self._libpart = self.start_libpart(self._conf.alarmgen_list())
+
         PartitionOwnershipReq.handle_request = self.handle_PartitionOwnershipReq
         PartitionStatusReq.handle_request = self.handle_PartitionStatusReq
         UVETableAlarmReq.handle_request = self.handle_UVETableAlarmReq 
 
-        self._workers = {}
+
+    def libpart_cb(self, part_list):
+
+        newset = set(part_list)
+        oldset = self._partset
+        self._partset = newset
+
+        self._logger.info('Partition List : new %s old %s' % \
+            (str(newset),str(oldset)))
+        
+        for addpart in (newset-oldset):
+            self._logger.info('Partition Add : %s' % addpart)
+            self.partition_change(addpart, True)
+        
+        for delpart in (oldset-newset):
+            self._logger.info('Partition Del : %s' % delpart)
+            self.partition_change(delpart, True)
+
+    def start_libpart(self, ag_list):
+        if not self._conf.zk_list():
+            self._logger.error('Could not import libpartition: No zookeeper')
+            return None
+        if not ag_list:
+            self._logger.error('Could not import libpartition: No alarmgen list')
+            return None
+        try:
+            from libpartition.libpartition import PartitionClient
+            self._logger.error('Starting PC')
+
+            pc = PartitionClient("alarmgen",
+                    self._libpart_name, ag_list,
+                    self._conf.partitions(), self.libpart_cb,
+                    ','.join(self._conf.zk_list()))
+            self._logger.error('Started PC')
+            return pc
+        except Exception as e:
+            self._logger.error('Could not import libpartition: %s' % str(e))
+            return None
 
     def handle_uve_notif(self, uves):
         self._logger.debug("Changed UVEs : %s" % str(uves))
@@ -150,8 +197,13 @@ class Controller(object):
             itr = self._us.multi_uve_get(uv, True, None, None, None, None)
             uve_data = itr.next()['value']
             if len(uve_data) == 0:
-                del self.tab_alarms[tab][uv]
                 self._logger.info("UVE %s deleted" % uv)
+                if self.tab_alarms[tab].has_key(uv):
+		    del self.tab_alarms[tab][uv]
+                    ustruct = UVEAlarms(name = uv, deleted = True)
+                    alarm_msg = AlarmTrace(data=ustruct, table=tab)
+                    self._logger.info('send del alarm: %s' % (alarm_msg.log()))
+                    alarm_msg.send()
                 continue
             results = self.mgrs[tab].map_method("__call__", uv, uve_data)
             new_uve_alarms = {}
@@ -166,6 +218,14 @@ class Controller(object):
                 if len(elems):
                     new_uve_alarms[nm] = UVEAlarmInfo(type = nm,
                                            description = elems, ack = False)
+            if (not self.tab_alarms[tab].has_key(uv)) or \
+                       pprint.pformat(self.tab_alarms[tab][uv]) != \
+                       pprint.pformat(new_uve_alarms):
+                ustruct = UVEAlarms(name = uv, alarms = new_uve_alarms.values(),
+                                    deleted = False)
+                alarm_msg = AlarmTrace(data=ustruct, table=tab)
+                self._logger.info('send alarm: %s' % (alarm_msg.log()))
+                alarm_msg.send()
             self.tab_alarms[tab][uv] = new_uve_alarms
             
         if len(no_handlers):
@@ -194,36 +254,50 @@ class Controller(object):
                 mr = True
             resp.response(req.context(), mr)
             np = np + 1
-        
-    def handle_PartitionOwnershipReq(self, req):
-        self._logger.info("Got PartitionOwnershipReq: %s" % str(req))
+
+    
+    def partition_change(self, partno, enl):
+        """
+        Call this function when getting or giving up
+        ownership of a partition
+        Args:
+            partno : Partition Number
+            enl    : True for acquiring, False for giving up
+        Returns: 
+            status of operation (True for success)
+        """
         status = False
-        if req.ownership:
-            if self._workers.has_key(req.partition):
-                self._logger.info("Dup partition %d" % req.partition)
+        if enl:
+            if self._workers.has_key(partno):
+                self._logger.info("Dup partition %d" % partno)
             else:
-                uvedb = self._us.get_part(req.partition)
+                uvedb = self._us.get_part(partno)
                 ph = UveStreamProc(','.join(self._conf.kafka_broker_list()),
-                                   req.partition, "uve-" + str(req.partition),
+                                   partno, "uve-" + str(partno),
                                    self._logger, uvedb,
                                    self.handle_uve_notif)
                 ph.start()
-                self._workers[req.partition] = ph
+                self._workers[partno] = ph
                 status = True
         else:
-            #import pdb; pdb.set_trace()
-            if self._workers.has_key(req.partition):
-                ph = self._workers[req.partition]
+            if self._workers.has_key(partno):
+                ph = self._workers[partno]
                 gevent.kill(ph)
                 res,db = ph.get()
                 print "Returned " + str(res)
                 print "State :"
                 for k,v in db.iteritems():
                     print "%s -> %s" % (k,str(v)) 
-                del self._workers[req.partition]
+                del self._workers[partno]
                 status = True
             else:
-                self._logger.info("No partition %d" % req.partition)
+                self._logger.info("No partition %d" % partno)
+
+        return status
+    
+    def handle_PartitionOwnershipReq(self, req):
+        self._logger.info("Got PartitionOwnershipReq: %s" % str(req))
+        status = self.partition_change(req.partition, req.ownership)
 
         resp = PartitionOwnershipResp()
         resp.status = status
@@ -251,7 +325,12 @@ class Controller(object):
                     for kgen,gen in coll.iteritems():
                         ugi = UVEGenInfo()
                         ugi.generator = kgen
-                        ugi.uves = list(gen)
+                        ugi.uves = []
+                        for uk,uc in gen.iteritems():
+                            ukc = UVEKeyInfo()
+                            ukc.key = uk
+                            ukc.count = uc
+                            ugi.uves.append(ukc)
                         uci.uves.append(ugi)
                     resp.uves.append(uci)
             else:
@@ -282,8 +361,19 @@ class Controller(object):
         alarmgen needs to know the list of all Analytics nodes (alarmgens).
         Periodically poll the alarmgen list from the discovery service
         '''
-        # TODO : Hookup with partitioning library
-        pass
+        newlist = []
+        for elem in alist:
+            (ipaddr, inst) = elem
+            newlist.append(ipaddr + ":" + inst)
+
+        # We should always include ourselves in the list of memebers
+        newset = set(newlist)
+        newset.add(self._libpart_name)
+        newlist = list(newset)
+        if not self._libpart:
+            self._libpart = self.start_libpart(newlist)
+        else:
+            self._libpart.update_cluster_list(newlist)
 
     def run(self):
         while True:

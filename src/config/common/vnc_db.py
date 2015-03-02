@@ -92,7 +92,11 @@ class DBBase(object):
     def update_single_ref(self, ref_type, obj):
         refs = obj.get(ref_type+'_refs') or obj.get(ref_type+'_back_refs')
         if refs:
-            new_id = refs[0]['uuid']
+            try:
+                new_id = refs[0]['uuid']
+            except KeyError:
+                fq_name = refs[0]['to']
+                new_id = self._cassandra.fq_name_to_uuid(ref_type, fq_name)
         else:
             new_id = None
         old_id = getattr(self, ref_type, None)
@@ -111,7 +115,12 @@ class DBBase(object):
         refs = obj.get(ref_type+'_refs') or obj.get(ref_type+'_back_refs')
         new_refs = set()
         for ref in refs or []:
-            new_refs.add(ref['uuid'])
+            try:
+                new_id = ref['uuid']
+            except KeyError:
+                fq_name = ref['to']
+                new_id = self._cassandra.fq_name_to_uuid(ref_type, fq_name)
+            new_refs.add(new_id)
         old_refs = getattr(self, ref_type+'s')
         for ref_id in old_refs - new_refs:
             ref_obj = self._OBJ_TYPE_MAP[ref_type].get(ref_id)

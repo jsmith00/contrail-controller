@@ -67,6 +67,7 @@ from overlay_to_underlay_mapper import OverlayToUnderlayMapper, \
 
 _ERRORS = {
     errno.EBADMSG: 400,
+    errno.ENOBUFS: 403,
     errno.EINVAL: 404,
     errno.ENOENT: 410,
     errno.EIO: 500,
@@ -74,6 +75,7 @@ _ERRORS = {
 }
 
 @bottle.error(400)
+@bottle.error(403)
 @bottle.error(404)
 @bottle.error(410)
 @bottle.error(500)
@@ -237,7 +239,7 @@ def redis_query_result(host, port, redis_password, qid):
             yield {}
     # Update connection info
     ConnectionState.update(conn_type = ConnectionType.REDIS,
-        message = 'Query[%s] result' % (qid),
+        message = None,
         status = ConnectionStatus.UP,
         server_addrs = ['%s:%d' % (host, port)],
         name = 'Query')
@@ -353,6 +355,7 @@ class OpServer(object):
         bottle.route('/', 'GET', obj.homepage_http_get)
         bottle.route('/analytics', 'GET', obj.analytics_http_get)
         bottle.route('/analytics/uves', 'GET', obj.uves_http_get)
+        bottle.route('/analytics/alarms', 'GET', obj.alarms_http_get)
         bottle.route(
             '/analytics/virtual-networks', 'GET', obj.uve_list_http_get)
         bottle.route(
@@ -413,6 +416,12 @@ class OpServer(object):
                 '/analytics/uves/' + uve + '/<name>', 'GET', obj.uve_http_get)
             bottle.route(
                 '/analytics/uves/' + uve, 'POST', obj.uve_http_post)
+            bottle.route(
+                '/analytics/alarms/' + uve + 's', 'GET', obj.alarm_list_http_get)
+            bottle.route(
+                '/analytics/alarms/' + uve + '/<name>', 'GET', obj.alarm_http_get)
+            bottle.route(
+                '/analytics/alarms/' + uve, 'POST', obj.alarm_http_post)
 
         return obj
     # end __new__
@@ -529,7 +538,7 @@ class OpServer(object):
                 self._state_server.update_redis_list(self.redis_uve_list)
                 self._uve_server.update_redis_uve_list(self.redis_uve_list)
 
-        self._analytics_links = ['uves', 'tables', 'queries']
+        self._analytics_links = ['uves', 'alarms', 'tables', 'queries']
 
         self._VIRTUAL_TABLES = copy.deepcopy(_TABLES)
 
@@ -602,6 +611,7 @@ class OpServer(object):
         bottle.route('/', 'GET', self.homepage_http_get)
         bottle.route('/analytics', 'GET', self.analytics_http_get)
         bottle.route('/analytics/uves', 'GET', self.uves_http_get)
+        bottle.route('/analytics/alarms', 'GET', self.alarms_http_get)
         bottle.route(
             '/analytics/virtual-networks', 'GET', self.uve_list_http_get)
         bottle.route(
@@ -660,6 +670,12 @@ class OpServer(object):
                 '/analytics/uves/' + uve + '/<name>', 'GET', self.uve_http_get)
             bottle.route(
                 '/analytics/uves/' + uve, 'POST', self.uve_http_post)
+            bottle.route(
+                '/analytics/alarms/' + uve + 's', 'GET', self.alarm_list_http_get)
+            bottle.route(
+                '/analytics/alarms/' + uve + '/<name>', 'GET', self.alarm_http_get)
+            bottle.route(
+                '/analytics/alarms/' + uve, 'POST', self.alarm_http_post)
     # end __init__
 
     def _parse_args(self, args_str=' '.join(sys.argv[1:])):
@@ -1139,8 +1155,7 @@ class OpServer(object):
             # Update connection info
             ConnectionState.update(conn_type = ConnectionType.REDIS,
                 name = 'Query', status = ConnectionStatus.UP,
-                message = 'Sync Query[%s] at %s' % \
-                    (qid, datetime.datetime.now().isoformat()),
+                message = None,
                 server_addrs = ['127.0.0.1' + ':' + 
                     str(self._args.redis_query_port)]) 
             self._logger.info(
@@ -1299,7 +1314,7 @@ class OpServer(object):
         return True, kfilter, sfilter, mfilter, tfilter
     # end _uve_http_post_filter_set
 
-    def uve_http_post(self):
+    def _uve_alarm_http_post(self, is_alarm):
         (ok, result) = self._post_common(bottle.request, None)
         if not ok:
             (code, msg) = result
@@ -1325,7 +1340,8 @@ class OpServer(object):
                     uve_name = uve_tbl + ':*'
                     for gen in self._uve_server.multi_uve_get(uve_name, True,
                                                               kfilter, sfilter,
-                                                              mfilter, tfilter):
+                                                              mfilter, tfilter,
+                                                              is_alarm):
                         if first:
                             yield u'' + json.dumps(gen)
                             first = False
@@ -1337,7 +1353,8 @@ class OpServer(object):
             for key in kfilter:
                 uve_name = uve_tbl + ':' + key
                 rsp = self._uve_server.get_uve(uve_name, True, sfilter,
-                                               mfilter, tfilter)
+                                               mfilter, tfilter,
+                                               is_alarm=is_alarm)
                 if rsp != {}:
                     data = {'name': key, 'value': rsp}
                     if first:
@@ -1346,9 +1363,17 @@ class OpServer(object):
                     else:
                         yield u', ' + json.dumps(data)
             yield u']}'
+    # end _uve_alarm_http_post
+
+    def uve_http_post(self):
+        return self._uve_alarm_http_post(is_alarm=False)
     # end uve_http_post
 
-    def uve_http_get(self, name):
+    def alarm_http_post(self):
+        return self._uve_alarm_http_post(is_alarm=True)
+    # end alarm_http_post
+
+    def _uve_alarm_http_get(self, name, is_alarm):
         # common handling for all resource get
         (ok, result) = self._get_common(bottle.request)
         if not ok:
@@ -1380,7 +1405,8 @@ class OpServer(object):
                 first = True
                 for gen in self._uve_server.multi_uve_get(uve_name, flat,
                                                           kfilter, sfilter,
-                                                          mfilter, tfilter):
+                                                          mfilter, tfilter,
+                                                          is_alarm):
                     if first:
                         yield u'' + json.dumps(gen)
                         first = False
@@ -1389,11 +1415,20 @@ class OpServer(object):
                 yield u']}'
             else:
                 rsp = self._uve_server.get_uve(uve_name, flat, sfilter,
-                                               mfilter, tfilter)
+                                               mfilter, tfilter,
+                                               is_alarm=is_alarm)
                 yield json.dumps(rsp)
+    # end _uve_alarm_http_get
+
+    def uve_http_get(self, name):
+        return self._uve_alarm_http_get(name, is_alarm=False)
     # end uve_http_get
 
-    def uve_list_http_get(self):
+    def alarm_http_get(self, name):
+        return self._uve_alarm_http_get(name, is_alarm=True)
+    # end alarm_http_get
+
+    def _uve_alarm_list_http_get(self, is_alarm):
         # common handling for all resource get
         (ok, result) = self._get_common(bottle.request)
         if not ok:
@@ -1426,16 +1461,25 @@ class OpServer(object):
                 OpServer._uve_filter_set(req)
 
             uve_list = self._uve_server.get_uve_list(
-                uve_tbl, kfilter, sfilter, mfilter, tfilter, True)
+                uve_tbl, kfilter, sfilter, mfilter, tfilter, True, is_alarm)
+            uve_or_alarm = 'alarms' if is_alarm else 'uves'
             base_url = bottle.request.urlparts.scheme + '://' + \
                 bottle.request.urlparts.netloc + \
-                '/analytics/uves/%s/' % (uve_type)
+                '/analytics/%s/%s/' % (uve_or_alarm, uve_type)
             uve_links =\
                 [obj_to_dict(LinkObject(uve,
                                         base_url + uve + "?" + uve_filters))
                  for uve in uve_list]
             return json.dumps(uve_links)
+    # end _uve_alarm_list_http_get
+
+    def uve_list_http_get(self):
+        return self._uve_alarm_list_http_get(is_alarm=False)
     # end uve_list_http_get
+
+    def alarm_list_http_get(self):
+        return self._uve_alarm_list_http_get(is_alarm=True)
+    # end alarm_list_http_get
 
     def analytics_http_get(self):
         # common handling for all resource get
@@ -1451,21 +1495,30 @@ class OpServer(object):
         return json.dumps(analytics_links)
     # end analytics_http_get
 
-    def uves_http_get(self):
+    def _uves_alarms_http_get(self, is_alarm):
         # common handling for all resource get
         (ok, result) = self._get_common(bottle.request)
         if not ok:
             (code, msg) = result
             abort(code, msg)
 
+        uve_or_alarm = 'alarms' if is_alarm else 'uves'
         base_url = bottle.request.urlparts.scheme + '://' + \
-            bottle.request.urlparts.netloc + '/analytics/uves/'
+            bottle.request.urlparts.netloc + '/analytics/%s/' % (uve_or_alarm)
         uvetype_links =\
             [obj_to_dict(
              LinkObject(uvetype + 's', base_url + uvetype + 's'))
                 for uvetype in UVE_MAP]
         return json.dumps(uvetype_links)
+    # end _uves_alarms_http_get
+
+    def uves_http_get(self):
+        return self._uves_alarms_http_get(is_alarm=False)
     # end uves_http_get
+
+    def alarms_http_get(self):
+        return self._uves_alarms_http_get(is_alarm=True)
+    # end alarms_http_get
 
     def send_trace_buffer(self, source, module, instance_id, name):
         response = {}
@@ -1522,23 +1575,58 @@ class OpServer(object):
                 json.dumps(response), _ERRORS[errno.EBADMSG],
                 {'Content-type': 'application/json'})
 
-        purge_input= None
+        analytics_start_time = self._analytics_db._get_analytics_start_time()
+        if (analytics_start_time == None):
+            self._logger.info("Failed to get the analytics start time")
+            response = {'status': 'failed',
+                        'reason': 'Failed to get the analytics start time'}
+            return bottle.HTTPResponse(
+                        json.dumps(response), _ERRORS[errno.EIO],
+                        {'Content-type': 'application/json'})
+
+        purge_input = None
         if ("purge_input" in bottle.request.json.keys()):
             value = bottle.request.json["purge_input"]
-            if( (type(value) is int) and (value <= 100) and (value > 0)):
-                purge_input = value
+            if (type(value) is int):
+                if ((value <= 100) and (value > 0)):
+                    current_time = UTCTimestampUsec()
+                    purge_input = analytics_start_time + (float((value)*
+                             (float(current_time) - float(analytics_start_time))))/100
+                else:
+                    response = {'status': 'failed',
+                        'reason': 'Valid % range is [1, 100]'}
+                    return bottle.HTTPResponse(
+                        json.dumps(response), _ERRORS[errno.EBADMSG],
+                        {'Content-type': 'application/json'})
+            elif (type(value) is unicode):
+                try:
+                    purge_input = OpServerUtils.convert_to_utc_timestamp_usec(value)
+                except:
+                    response = {'status': 'failed',
+                   'reason': 'Valid time formats are: \'%Y %b %d %H:%M:%S.%f\', '
+                   '\'now\', \'now-h/m/s\', \'-/h/m/s\' in  purge_input'}
+                    return bottle.HTTPResponse(
+                        json.dumps(response), _ERRORS[errno.EBADMSG],
+                        {'Content-type': 'application/json'})
             else:
-                response = {
-                    'status': 'failed', 'reason': 'INVALID purge_input'}
+                response = {'status': 'failed',
+                    'reason': 'Valid purge_input format is % or time'}
                 return bottle.HTTPResponse(
                     json.dumps(response), _ERRORS[errno.EBADMSG],
                     {'Content-type': 'application/json'})
         else:
-            response = {
-                'status': 'failed', 'reason': 'purge_input not specified'}
+            response = {'status': 'failed',
+                        'reason': 'purge_input not specified'}
             return bottle.HTTPResponse(
                 json.dumps(response), _ERRORS[errno.EBADMSG],
                 {'Content-type': 'application/json'})
+
+        if (purge_input <= analytics_start_time):
+            response = {'status': 'failed',
+                'reason': 'purge input is less than analytics start time'}
+            return bottle.HTTPResponse(
+                    json.dumps(response), _ERRORS[errno.EIO],
+                    {'Content-type': 'application/json'})
 
         res = self._analytics_db.get_analytics_db_purge_status(
                   self._state_server._redis_list)

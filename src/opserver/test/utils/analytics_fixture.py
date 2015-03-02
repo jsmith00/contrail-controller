@@ -15,14 +15,17 @@ import copy
 import os
 import json
 import gevent
+import datetime
 from fcntl import fcntl, F_GETFL, F_SETFL
 from operator import itemgetter
 from opserver_introspect_utils import VerificationOpsSrv
 from collector_introspect_utils import VerificationCollector
 from alarmgen_introspect_utils import VerificationAlarmGen
 from opserver.sandesh.viz.constants import COLLECTOR_GLOBAL_TABLE, SOURCE, MODULE
+from opserver.opserver_util import OpServerUtils
 from sandesh_common.vns.constants import NodeTypeNames, ModuleNames
 from sandesh_common.vns.ttypes import NodeType, Module
+from pysandesh.util import UTCTimestampUsec
 
 class Query(object):
     table = None
@@ -167,20 +170,10 @@ class Collector(object):
 
     def stop(self):
         if self._instance is not None:
-            self._logger.info('Shutting down Vizd: 127.0.0.1:%s' 
-                              % str(self.listen_port))
-            if self._instance.poll() == None:
-                self._instance.terminate()
-            (vizd_out, vizd_err) = self._instance.communicate()
-            vcode = self._instance.returncode
-            if vcode != 0:
-                self._logger.info('vizd returned %d' % vcode)
-                self._logger.info('vizd terminated stdout: %s' % vizd_out)
-                self._logger.info('vizd terminated stderr: %s' % vizd_err)
-                with open(self._log_file, 'r') as fin:
-                    self._logger.info(fin.read())
-            subprocess.call(['rm', self._log_file])
-            assert(vcode == 0)
+            rcode = self.analytics_fixture.process_stop(
+                "contrail-collector:%d" % self.listen_port,
+                self._instance, self._log_file)
+            #assert(rcode == 0)
             self._instance = None
     # end stop
 
@@ -255,21 +248,11 @@ class AlarmGen(object):
 
     def stop(self):
         if self._instance is not None:
-            self._logger.info('Shutting down AlarmGen 127.0.0.1:%s' 
-                              % str(self.http_port))
-            if self._instance.poll() == None:
-                self._instance.terminate()
-            (op_out, op_err) = self._instance.communicate()
-            ocode = self._instance.returncode
-            if ocode != 0:
-                self._logger.info('AlarmGen returned %d' % ocode)
-                self._logger.info('AlarmGen terminated stdout: %s' % op_out)
-                self._logger.info('AlarmGen terminated stderr: %s' % op_err)
-                with open(self._log_file, 'r') as fin:
-                    self._logger.info(fin.read())
-            subprocess.call(['rm', self._log_file])
+            rcode = self.analytics_fixture.process_stop(
+                "contrail-alarm-gen:%d" % self.http_port,
+                self._instance, self._log_file)
+            #assert(rcode == 0)
             self._instance = None
-            self.http_port = 0
     # end stop
 
     # TODO : PartitionOwnershipReq, PartitionStatusReq
@@ -354,19 +337,10 @@ class OpServer(object):
 
     def stop(self):
         if self._instance is not None:
-            self._logger.info('Shutting down OpServer 127.0.0.1:%d' 
-                              % (self.listen_port))
-            if self._instance.poll() == None:
-                self._instance.terminate()
-            (op_out, op_err) = self._instance.communicate()
-            ocode = self._instance.returncode
-            if ocode != 0:
-                self._logger.info('OpServer returned %d' % ocode)
-                self._logger.info('OpServer terminated stdout: %s' % op_out)
-                self._logger.info('OpServer terminated stderr: %s' % op_err)
-                with open(self._log_file, 'r') as fin:
-                    self._logger.info(fin.read())
-            subprocess.call(['rm', self._log_file])
+            rcode = self.analytics_fixture.process_stop(
+                "contrail-analytics-api:%d" % self.listen_port,
+                self._instance, self._log_file)
+            #assert(rcode == 0)
             self._instance = None
     # end stop
 
@@ -445,20 +419,10 @@ class QueryEngine(object):
 
     def stop(self):
         if self._instance is not None:
-            self._logger.info('Shutting down contrail-query-engine: 127.0.0.1:%d'
-                              % (self.listen_port))
-            if self._instance.poll() == None:
-                self._instance.terminate()
-            (qe_out, qe_err) = self._instance.communicate()
-            rcode = self._instance.returncode
-            if rcode != 0:
-                self._logger.info('contrail-query-engine returned %d' % rcode)
-                self._logger.info('contrail-query-engine terminated stdout: %s' % qe_out)
-                self._logger.info('contrail-query-engine terminated stderr: %s' % qe_err)
-                with open(self._log_file, 'r') as fin:
-                    self._logger.info(fin.read())
-            subprocess.call(['rm', self._log_file])
-            assert(rcode == 0)
+            rcode = self.analytics_fixture.process_stop(
+                "contrail-query-engine:%d" % self.listen_port,
+                self._instance, self._log_file)
+            #assert(rcode == 0)
             self._instance = None
     # end stop
 
@@ -482,9 +446,10 @@ class Redis(object):
         if not self.use_global:
             if self.port == -1:
                 self.port = AnalyticsFixture.get_free_port()
-            mockredis.start_redis(
+            ret = mockredis.start_redis(
                 self.port, self.builddir+'/testroot/bin/redis-server',
                 self.password)
+            assert(ret)
         else:
             redish = redis.StrictRedis("127.0.0.1", self.port, password=self.password)
             redish.flushall()
@@ -787,6 +752,7 @@ class AnalyticsFixture(fixtures.Fixture):
                     return False
         except Exception as e:
             self.logger.error('Exception: %s' % e)
+            return False
         return True
     # end verify_generator_uve_list
 
@@ -1848,23 +1814,10 @@ class AnalyticsFixture(fixtures.Fixture):
                             end_time="now",
                             select_fields=["fields.value"],
                             where=[[{"name": "name", "value": "Message", "op": 7}]])
-	json_qstr = json.dumps(query.__dict__)
-	res = vns.post_query_json(json_qstr)
-        self.logger.info(str(res))
-        assert(len(res)>1)
-        return True
-
-    def verify_fieldname_objecttype(self):
-        self.logger.info('Verify stats table for stats name field');
-        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port);
-        query = Query(table="ObjectCollectorInfo",
-                            start_time="now-600s",
-                            end_time="now",
-                            select_fields=["ObjectId"]);
         json_qstr = json.dumps(query.__dict__)
         res = vns.post_query_json(json_qstr)
         self.logger.info(str(res))
-        assert(len(res) > 0)
+        assert(len(res)>1)
         return True
 
     @retry(delay=2, tries=5)
@@ -1972,16 +1925,15 @@ class AnalyticsFixture(fixtures.Fixture):
         return True
     # end verify_collector_object_log_before_purge
 
-    def verify_database_purge_query(self):
+    def verify_database_purge_query(self, json_qstr):
         self.logger.info('verify database purge query');
         vns = VerificationOpsSrv('127.0.0.1', self.opserver_port);
-        json_qstr = json.dumps({'purge_input': 100})
         res = vns.post_purge_query_json(json_qstr)
         assert(res == 'started')
         return True
     # end verify_database_purge_query
 
-    @retry(delay=2, tries=20)
+    @retry(delay=2, tries=5)
     def verify_collector_object_log_after_purge(self, start_time, end_time):
         self.logger.info('verify_collector_object_log_after_purge')
         vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
@@ -1991,6 +1943,55 @@ class AnalyticsFixture(fixtures.Fixture):
             return False
         return True
     # end verify_collector_object_log_after_purge
+
+    def verify_database_purge_with_percentage_input(self):
+        self.logger.info('verify database purge query')
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        end_time = UTCTimestampUsec()
+        start_time = end_time - 10*60*pow(10,6)
+        assert(self.verify_collector_object_log_before_purge(start_time, end_time))
+        json_qstr = json.dumps({'purge_input': 100})
+        assert(self.verify_database_purge_query(json_qstr))
+        assert(self.verify_collector_object_log_after_purge(start_time, end_time))
+        return True
+    # end verify_database_purge_query
+
+    def verify_database_purge_support_utc_time_format(self):
+        self.logger.info('verify database purge support utc time format')
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        json_qstr = json.dumps({'purge_input': 'now'})
+        end_time = OpServerUtils.convert_to_utc_timestamp_usec('now')
+        start_time = end_time - 20*60*pow(10,6)
+        assert(self.verify_collector_object_log_before_purge(start_time, end_time))
+        assert(self.verify_database_purge_query(json_qstr))
+        assert(self.verify_collector_object_log_after_purge(start_time, end_time))
+        return True
+    # end verify_database_purge_support_utc_time_format
+
+    def verify_database_purge_support_datetime_format(self):
+        self.logger.info('verify database purge support datetime format')
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        dt = datetime.datetime.now().strftime("%Y %b %d %H:%M:%S.%f")
+        json_qstr = json.dumps({'purge_input': dt})
+        end_time = OpServerUtils.convert_to_utc_timestamp_usec(dt)
+        start_time = end_time - 30*60*pow(10,6)
+        assert(self.verify_collector_object_log_before_purge(start_time, end_time))
+        assert(self.verify_database_purge_query(json_qstr))
+        assert(self.verify_collector_object_log_after_purge(start_time, end_time))
+        return True
+    # end verify_database_purge_support_datetime_format
+
+    def verify_database_purge_support_deltatime_format(self):
+        self.logger.info('verify database purge support deltatime format')
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        json_qstr = json.dumps({'purge_input': '-1s'})
+        end_time = OpServerUtils.convert_to_utc_timestamp_usec('-1s')
+        start_time = end_time - 10*60*pow(10,6)
+        assert(self.verify_collector_object_log_before_purge(start_time, end_time))
+        assert(self.verify_database_purge_query(json_qstr))
+        assert(self.verify_collector_object_log_after_purge(start_time, end_time))
+        return True
+    # end verify_database_purge_support_deltatime_format
 
     def verify_database_purge_request_limit(self):
         self.logger.info('verify database purge request limit')
@@ -2003,6 +2004,25 @@ class AnalyticsFixture(fixtures.Fixture):
                 return True
         return False
     # end verify_database_purge_request_limit
+
+    @retry(delay=1, tries=5)
+    def verify_object_table_sandesh_types(self, table, object_id,
+                                          exp_msg_types):
+        self.logger.info('verify_object_table_sandesh_types')
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        res = vns.post_query(table, start_time='-1m', end_time='now',
+                select_fields=['Messagetype', 'ObjectLog', 'SystemLog'],
+                where_clause='ObjectId=%s' % object_id)
+        if not res:
+            return False
+        self.logger.info('ObjectTable query response: %s' % str(res))
+        actual_msg_types = [r['Messagetype'] for r in res]
+        actual_msg_types.sort()
+        exp_msg_types.sort()
+        self.logger.info('Expected message types: %s' % str(exp_msg_types))
+        self.logger.info('Actual message types: %s' % str(actual_msg_types))
+        return actual_msg_types == exp_msg_types
+    # end verify_object_table_sandesh_types
 
     @retry(delay=1, tries=10)
     def verify_object_value_table_query(self, table, exp_object_values):
@@ -2064,7 +2084,7 @@ class AnalyticsFixture(fixtures.Fixture):
         '''
         self.logger.info("verify_fieldname_table")
         vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
-	self.logger.info("VerificationOpsSrv")
+        self.logger.info("VerificationOpsSrv")
         res = vns.post_query('StatTable.FieldNames.fields',
                              start_time='-1m',
                              end_time='now',
@@ -2075,6 +2095,51 @@ class AnalyticsFixture(fixtures.Fixture):
 	assert(len(res)==2)
         return True
     # end verify_fieldname_table
+
+    @retry(delay=1, tries=5)
+    def verify_alarms_table(self, table, expected_alarms):
+        self.logger.info('verify_alarms_table: %s' % (table))
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        try:
+            alarms = vns.get_alarms(table+'s')
+        except Exception as err:
+            self.logger.error('Failed to get alarms %ss: %s' % (table, str(err)))
+            assert(False)
+        actual_alarms = [alarm['name'] for alarm in alarms]
+        expected_alarms.sort()
+        actual_alarms.sort()
+        self.logger.info('Expected Alarms: %s' % (str(expected_alarms)))
+        self.logger.info('Actual Alarms: %s' % (str(actual_alarms)))
+        if actual_alarms != expected_alarms:
+            return False
+        return True
+    # end verify_alarms_table
+
+    @retry(delay=1, tries=3)
+    def verify_alarm(self, table, key, expected_alarm):
+        self.logger.info('verify_alarm: %s:%s' % (table, key))
+        vns = VerificationOpsSrv('127.0.0.1', self.opserver_port)
+        try:
+            alarm = vns.get_alarms(table+'/'+key+'?flat')
+        except Exception as err:
+            self.logger.error('Failed to get alarm %s:%s: %s' % \
+                              (table, key, str(err)))
+            assert(False)
+        return self.verify_alarm_data(expected_alarm, alarm)
+    # end verify_alarm
+
+    def verify_alarm_data(self, expected_alarm_data, actual_alarm_data):
+        self.logger.info('Expected Alarm: %s' % (str(expected_alarm_data)))
+        self.logger.info('Actual Alarm: %s' % (str(actual_alarm_data)))
+        if expected_alarm_data == {}:
+            return actual_alarm_data == {}
+        expected_alarms = expected_alarm_data['alarms']
+        try:
+            actual_alarms = actual_alarm_data['AlarmData']['alarms']
+        except KeyError:
+            return False
+        return actual_alarms == expected_alarms
+    # end verify_alarm_data
 
     def cleanUp(self):
 
@@ -2113,6 +2178,31 @@ class AnalyticsFixture(fixtures.Fixture):
         u_port = sock.getsockname()[1]
         sock.close()
         return u_port
+
+    def process_stop(self, name, instance, log_file, del_log = True):
+        self.logger.info('Shutting down %s' % name)
+        if instance.poll() == None:
+            instance.terminate()
+            cnt = 1
+            while cnt < 10:
+                if instance.poll() != None:
+                    break
+                cnt += 1
+                gevent.sleep(1)
+        if instance.poll() == None:
+            self.logger.info('%s FAILED to terminate; will be killed' % name)
+            instance.kill()
+        (p_out, p_err) = instance.communicate()
+        rcode = instance.returncode
+        if rcode != 0:
+            self.logger.info('%s returned %d' % (name,rcode))
+            self.logger.info('%s terminated stdout: %s' % (name, p_out))
+            self.logger.info('%s terminated stderr: %s' % (name, p_err))
+            with open(log_file, 'r') as fin:
+                self.logger.info(fin.read())
+        if del_log:
+            subprocess.call(['rm', '-rf', log_file])
+        return rcode
 
     def start_with_ephemeral_ports(self, modname, pnames, args, preexec):
 
