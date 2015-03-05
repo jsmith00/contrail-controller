@@ -112,6 +112,7 @@ public:
                      FlowPolicyInfo *info) const;
     bool Changed(const AclEntries &new_acl_entries) const;
     uint32_t ace_count() const { return acl_entries_.size();}
+    bool IsRulePresent(const std::string &uuid) const;
 private:
     friend class AclTable;
     uuid uuid_;
@@ -145,6 +146,10 @@ public:
     virtual bool Delete(DBEntry *entry, const DBRequest *req);
 
     virtual bool IFNodeToReq(IFMapNode *node, DBRequest &req);
+    virtual bool IFNodeToUuid(IFMapNode *node, boost::uuids::uuid &u);
+    virtual bool IFLinkToReq(IFMapLink *link, IFMapNode *node,
+                             const std::string &peer_type, IFMapNode *peer,
+                             DBRequest &req);
 
     static DBTableBase *CreateTable(DB *db, const std::string &name);
     TrafficAction::Action ConvertActionString(std::string action) const;

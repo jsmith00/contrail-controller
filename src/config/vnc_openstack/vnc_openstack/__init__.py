@@ -65,44 +65,51 @@ def fill_keystone_opts(obj, conf_sections):
     except ConfigParser.NoOptionError:
         obj._err_file = '/var/log/contrail/vnc_openstack.err'
 
+    try:
+        # Duration between polls to keystone to find deleted projects
+        resync_interval = conf_sections.get('DEFAULTS',
+                                            'keystone_resync_interval_secs')
+    except ConfigParser.NoOptionError:
+        resync_interval = '60'
+    obj._resync_interval_secs = int(resync_interval)
+
+    try:
+        # Number of workers used to process keystone project resyncing
+        resync_workers = conf_sections.get('DEFAULTS',
+                                           'keystone_resync_workers')
+    except ConfigParser.NoOptionError:
+        resync_workers = '10'
+    obj._resync_number_workers = int(resync_workers)
+
 def _create_default_security_group(vnc_lib, proj_obj):
-    sgr_uuid = str(uuid.uuid4())
-    ingress_rule = PolicyRuleType(rule_uuid=sgr_uuid, direction='>',
-                                  protocol='any',
-                                  src_addresses=[
-                                      AddressType(
-                                          security_group=proj_obj.get_fq_name_str() + ':' + 'default')],
-                                  src_ports=[PortType(0, 65535)],
-                                  dst_addresses=[
-                                      AddressType(security_group='local')],
-                                  dst_ports=[PortType(0, 65535)])
-    sg_rules = PolicyEntriesType([ingress_rule])
+    def _get_rule(ingress, sg, prefix, ethertype):
+        sgr_uuid = str(uuid.uuid4())
+        if sg:
+            addr = AddressType(
+                security_group=proj_obj.get_fq_name_str() + ':' + sg)
+        elif prefix:
+            addr = AddressType(subnet=SubnetType(prefix, 0))
+        local_addr = AddressType(security_group='local')
+        if ingress:
+            src_addr = addr
+            dst_addr = local_addr
+        else:
+            src_addr = local_addr
+            dst_addr = addr
+        rule = PolicyRuleType(rule_uuid=sgr_uuid, direction='>',
+                              protocol='any',
+                              src_addresses=[src_addr],
+                              src_ports=[PortType(0, 65535)],
+                              dst_addresses=[dst_addr],
+                              dst_ports=[PortType(0, 65535)],
+                              ethertype=ethertype)
+        return rule
 
-    sgr_uuid = str(uuid.uuid4())
-    egress_rule = PolicyRuleType(rule_uuid=sgr_uuid, direction='>',
-                                 protocol='any',
-                                 src_addresses=[
-                                     AddressType(security_group='local')],
-                                 src_ports=[PortType(0, 65535)],
-                                 dst_addresses=[
-                                     AddressType(
-                                         subnet=SubnetType('0.0.0.0', 0))],
-                                 dst_ports=[PortType(0, 65535)],
-                                 ethertype='IPv4')
-    sg_rules.add_policy_rule(egress_rule)
-
-    sgr_uuid = str(uuid.uuid4())
-    egress_rule = PolicyRuleType(rule_uuid=sgr_uuid, direction='>',
-                                 protocol='any',
-                                 src_addresses=[
-                                     AddressType(security_group='local')],
-                                 src_ports=[PortType(0, 65535)],
-                                 dst_addresses=[
-                                     AddressType(
-                                         subnet=SubnetType('::', 0))],
-                                 dst_ports=[PortType(0, 65535)],
-                                 ethertype='IPv6')
-    sg_rules.add_policy_rule(egress_rule)
+    rules = [_get_rule(True, 'default', None, 'IPv4'),
+             _get_rule(True, 'default', None, 'IPv6'),
+             _get_rule(False, None, '0.0.0.0', 'IPv4'),
+             _get_rule(False, None, '::', 'IPv6')]
+    sg_rules = PolicyEntriesType(rules)
 
     # create security group
     sg_obj = vnc_api.SecurityGroup(name='default', parent_obj=proj_obj,
@@ -154,8 +161,6 @@ class OpenstackDriver(vnc_plugin_base.Resync):
             self._add_project_to_vnc = self._ksv2_add_project_to_vnc
             self._del_project_from_vnc = self._ksv2_del_project_from_vnc
 
-        self._resync_interval_secs = 2
-        self._resync_number_workers = 10 #TODO(sahid) needs to be configured by conf.
         self._ks = None
         self._vnc_lib = None
 
@@ -254,6 +259,7 @@ class OpenstackDriver(vnc_plugin_base.Resync):
         proj_obj = vnc_api.Project(proj_name)
         proj_obj.uuid = id
         self._vnc_lib.project_create(proj_obj)
+        self._vnc_project_ids.add(id)
     # end _ksv2_sync_project_to_vnc
 
     def _ksv2_add_project_to_vnc(self, project_id):
@@ -366,6 +372,8 @@ class OpenstackDriver(vnc_plugin_base.Resync):
         proj_obj = vnc_api.Project(project_name, parent_obj=dom_obj)
         proj_obj.uuid = project_id
         self._vnc_lib.project_create(proj_obj)
+        self._vnc_domain_ids.add(domain_uuid)
+        self._vnc_project_ids.add(project_id)
     # end _ksv3_sync_project_to_vnc
 
     def _ksv3_add_project_to_vnc(self, project_id):

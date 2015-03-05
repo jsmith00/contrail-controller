@@ -344,6 +344,8 @@ void Agent::InitPeers() {
                                  new Peer(Peer::MULTICAST_FABRIC_TREE_BUILDER,
                                           MULTICAST_FABRIC_TREE_BUILDER_NAME,
                                           false));
+    mac_vm_binding_peer_.reset(new Peer(Peer::MAC_VM_BINDING_PEER,
+                              MAC_VM_BINDING_PEER_NAME, false));
 }
 
 Agent::Agent() :
@@ -528,4 +530,10 @@ bool Agent::isVmwareVcenterMode() const {
         return false;
 
     return params_->isVmwareVcenterMode();
+}
+
+void Agent::ConcurrencyCheck() {
+    if (test_mode_) {
+       CHECK_CONCURRENCY("db::DBTable", "Agent::KSync");
+    }
 }

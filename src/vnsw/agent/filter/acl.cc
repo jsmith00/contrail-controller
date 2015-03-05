@@ -16,6 +16,7 @@
 #include <agent_types.h>
 
 #include <cfg/cfg_init.h>
+#include <cfg/cfg_listener.h>
 
 #include <filter/traffic_action.h>
 #include <filter/acl_entry_match.h>
@@ -207,6 +208,7 @@ static void AclEntryObjectTrace(AclEntrySandeshData &ace_sandesh, AclEntrySpec &
     } else {
         ace_sandesh.set_rule_type("NT");
     }
+    ace_sandesh.set_uuid(ace_spec.rule_uuid);
 
     std::string src;
     if (ace_spec.src_addr_type == AddressMatch::NETWORK_ID) {
@@ -313,11 +315,19 @@ static void AclObjectTrace(AgentLogEvent::type event, AclSpec &acl_spec)
     }
 }
 
-bool AclTable::IFNodeToReq(IFMapNode *node, DBRequest &req) {
+bool AclTable::IFNodeToUuid(IFMapNode *node, boost::uuids::uuid &u) {
     AccessControlList *cfg_acl = static_cast <AccessControlList *> (node->GetObject());
     autogen::IdPermsType id_perms = cfg_acl->id_perms();
-    boost::uuids::uuid u;
     CfgUuidSet(id_perms.uuid.uuid_mslong, id_perms.uuid.uuid_lslong, u);
+    return true;
+}
+
+bool AclTable::IFNodeToReq(IFMapNode *node, DBRequest &req) {
+
+    AccessControlList *cfg_acl = static_cast <AccessControlList *> (node->GetObject());
+    uuid u;
+    if (agent()->cfg_listener()->GetCfgDBStateUuid(node, u) == false)
+        return false;
 
     // Delete ACL
     if (req.oper == DBRequest::DB_ENTRY_DELETE) {
@@ -403,6 +413,23 @@ bool AclTable::IFNodeToReq(IFMapNode *node, DBRequest &req) {
         }
     }
     AclObjectTrace(AgentLogEvent::ADD, acl_spec);
+    return false;
+}
+
+bool AclTable::IFLinkToReq(IFMapLink *link, IFMapNode *node,
+                          const std::string &peer_type, IFMapNode *peer,
+                          DBRequest &req) {
+    if (peer && peer->table() == agent()->cfg()->cfg_vn_table()) {
+        DBRequest vn_req;
+        req.oper = DBRequest::DB_ENTRY_ADD_CHANGE;
+        agent()->vn_table()->IFNodeToReq(peer, vn_req);
+    }
+
+    if (peer && peer->table() == agent()->cfg()->cfg_sg_table()) {
+        DBRequest sg_req;
+        req.oper = DBRequest::DB_ENTRY_ADD_CHANGE;
+        agent()->sg_table()->IFNodeToReq(peer, sg_req);
+    }
     return false;
 }
 
@@ -593,6 +620,18 @@ const AclDBEntry* AclTable::GetAclDBEntry(const string acl_uuid_str,
     AclDBEntry *acl_entry = static_cast<AclDBEntry *>(table->FindActiveEntry(&key));
 
     return acl_entry;
+}
+
+bool AclDBEntry::IsRulePresent(const string &rule_uuid) const {
+    AclDBEntry::AclEntries::const_iterator it = acl_entries_.begin();
+    while (it != acl_entries_.end()) {
+        const AclEntry *ae = it.operator->();
+        if (ae->uuid() == rule_uuid) {
+            return true;
+        }
+        ++it;
+    }
+    return false;
 }
 
 void AclTable::AclFlowResponse(const string acl_uuid_str, const string ctx,

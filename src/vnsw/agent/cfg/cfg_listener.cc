@@ -61,9 +61,11 @@ void CfgListener::Shutdown() {
     }
 
     cfg_listener_map_.clear();
+    cfg_link_listener_map_.clear();
     cfg_listener_cb_map_.clear();
     cfg_listener_id_map_.clear();
 }
+
 
 // Get CfgDBState set for an IFNode
 CfgDBState *CfgListener::GetCfgDBState(IFMapTable *table, DBEntryBase *dbe,
@@ -75,6 +77,19 @@ CfgDBState *CfgListener::GetCfgDBState(IFMapTable *table, DBEntryBase *dbe,
 
     id = it->second;
     return static_cast<CfgDBState *>(dbe->GetState(table, id));
+}
+
+
+bool CfgListener::GetCfgDBStateUuid(IFMapNode *node, boost::uuids::uuid &id) {
+
+    DBEntryBase *dbe = static_cast <DBEntryBase *> (node);
+    DBTableBase::ListenerId lid = 0;
+    CfgDBState *state = GetCfgDBState(node->table(), dbe, lid);
+    if (!state || (state->uuid_ == boost::uuids::nil_uuid()))
+        return false;
+
+    id = state->uuid_;
+    return true;
 }
 
 // When traversing graph, check if an IFMapNode can be used. Conditions are,
@@ -143,6 +158,11 @@ AgentDBTable* CfgListener::GetOperDBTable(IFMapNode *node) {
         return NULL;
     }
     const CfgTableListenerInfo *info = &loc->second;
+
+    // IF delete operation lets not bother about mandatory fields
+    if (node->IsDeleted())
+        return info->table_;
+
     // Check for presence of ID_PERMS if configured
     if (info->need_property_id_ >= 0) {
         const IFMapObject *obj = node->GetObject();
@@ -152,6 +172,36 @@ AgentDBTable* CfgListener::GetOperDBTable(IFMapNode *node) {
         }
     }
 
+    return info->table_;
+}
+
+// LinkRegister is used by the config clients to receive notifications of
+// IFMapLinks. If LinkRegsiter is not done, then IFNodeToReq is called
+//
+// IFNodeToReq is not aware of change in link neighbours. As a result, 
+// IFNodeToReq very often ends up propogating changes to all neighbours.
+// A link typically changes a single neighbour, but since IFNodeToReq is not
+// aware of which peer is modified, it ends up being non-optimal.
+//
+// New Link notifier is added so that the config client can be aware of link
+// peer being modified and the processing can be optimized based on the peer
+void CfgListener::LinkRegister(const std::string &type, AgentDBTable *table) {
+    CfgTableListenerInfo info = {table, -1};
+    pair<CfgListenerMap::iterator, bool> result =
+            cfg_link_listener_map_.insert(make_pair(type, info));
+    assert(result.second);
+}
+
+// Get the oper-db table to be notified for a IFMapLink
+AgentDBTable* CfgListener::GetLinkOperDBTable(IFMapNode *node) {
+    IFMapTable *cfg_table = node->table();
+    std::string table_name = cfg_table->Typename();
+
+    CfgListenerMap::const_iterator it = cfg_link_listener_map_.find(table_name);
+    if (it == cfg_link_listener_map_.end()) {
+        return NULL;
+    }
+    const CfgTableListenerInfo *info = &it->second;
     return info->table_;
 }
 
@@ -179,7 +229,8 @@ CfgListener::NodeListenerCb CfgListener::GetCallback(IFMapNode *node) {
     return info->cb_;
 }
 
-void CfgListener::LinkNotify(IFMapNode *node, CfgDBState *state,
+void CfgListener::LinkNotify(IFMapLink *link, IFMapNode *node, IFMapNode *peer,
+                             const string &peer_type, CfgDBState *state,
                              DBTableBase::ListenerId id) {
     if (node == NULL) {
         return;
@@ -189,7 +240,28 @@ void CfgListener::LinkNotify(IFMapNode *node, CfgDBState *state,
         return;
     }
 
-    AgentDBTable *oper_table = GetOperDBTable(node);
+    // Check if link notifier is registered. If there is no callback
+    // registered for links, use IFNodeToReq iteself
+    AgentDBTable *oper_table = NULL;
+    oper_table = GetLinkOperDBTable(node);
+
+    // Invoke IFLinkToReq under following conditions,
+    // - Link notification registered for the object
+    // - Object is already notified (state is set)
+    if (oper_table && state != NULL) {
+        // Skip link notification if node cannot be notified
+        if (oper_table->CanNotify(node)) {
+            // Link can only result in update to existing entry. So, ADD_CHANGE
+            // is the only operation needed
+            DBRequest req(DBRequest::DB_ENTRY_ADD_CHANGE);
+            if (oper_table->IFLinkToReq(link, node, peer_type, peer, req)) {
+                oper_table->Enqueue(&req);
+            }
+        }
+        return;
+    }
+
+    oper_table = GetOperDBTable(node);
     if (oper_table && oper_table->CanNotify(node)) {
         UpdateSeenState(node->table(), node, state, id);
         NodeNotify(oper_table, node);
@@ -213,11 +285,13 @@ void CfgListener::LinkListener(DBTablePartBase *partition, DBEntryBase *dbe) {
     CfgDBState *lstate = NULL;
     CfgDBState *rstate = NULL;
 
+    const IFMapNode::Descriptor &ldescriptor = link->left_id();
     IFMapNode *lnode = link->LeftNode(database_);
     if (lnode) {
         lstate = GetCfgDBState(lnode->table(), lnode, lid);
     }
 
+    const IFMapNode::Descriptor &rdescriptor = link->right_id();
     IFMapNode *rnode = link->RightNode(database_);
     if (rnode) {
         rstate = GetCfgDBState(rnode->table(), rnode, rid);
@@ -237,14 +311,14 @@ void CfgListener::LinkListener(DBTablePartBase *partition, DBEntryBase *dbe) {
     //     If right node is not notified, notify right followed by left.
     //     Else, notify left followed by right
     if (lstate != NULL && rstate != NULL) {
-        LinkNotify(lnode, lstate, lid);
-        LinkNotify(rnode, rstate, rid);
+        LinkNotify(link, lnode, rnode, rdescriptor.first, lstate, lid);
+        LinkNotify(link, rnode, lnode, ldescriptor.first, rstate, rid);
     } else if (lstate == NULL) {
-        LinkNotify(lnode, lstate, lid);
-        LinkNotify(rnode, rstate, rid);
+        LinkNotify(link, lnode, rnode, rdescriptor.first, lstate, lid);
+        LinkNotify(link, rnode, lnode, ldescriptor.first, rstate, rid);
     } else if (rstate == NULL) {
-        LinkNotify(rnode, rstate, rid);
-        LinkNotify(lnode, lstate, lid);
+        LinkNotify(link, rnode, lnode, ldescriptor.first, rstate, rid);
+        LinkNotify(link, lnode, rnode, rdescriptor.first, lstate, lid);
     }
 }
 
@@ -253,6 +327,10 @@ void CfgListener::NodeNotify(AgentDBTable *oper_table, IFMapNode *node) {
     if (node->IsDeleted()) {
         req.oper = DBRequest::DB_ENTRY_DELETE;
     } else {
+        DBEntryBase *dbe = static_cast <DBEntryBase *>(node);
+        DBTableBase::ListenerId lid = 0;
+        CfgDBState *state = GetCfgDBState(node->table(), dbe, lid);
+        oper_table->IFNodeToUuid(node, state->uuid_);
         req.oper = DBRequest::DB_ENTRY_ADD_CHANGE;
     }
 
@@ -352,7 +430,7 @@ void CfgListener::NodeReSync(IFMapNode *node) {
     }
 }
 
-void CfgListener::Register(std::string type, AgentDBTable *table,
+void CfgListener::Register(const std::string &type, AgentDBTable *table,
                            int need_property_id) {
     CfgTableListenerInfo info = {table, need_property_id};
     pair<CfgListenerMap::iterator, bool> result =
@@ -368,7 +446,7 @@ void CfgListener::Register(std::string type, AgentDBTable *table,
     assert(result_id.second);
 }
 
-void CfgListener::Register(std::string type, NodeListenerCb callback,
+void CfgListener::Register(const std::string &type, NodeListenerCb callback,
                            int need_property_id) {
     CfgListenerInfo info = {callback, need_property_id};
     pair<CfgListenerCbMap::iterator, bool> result =
@@ -400,9 +478,9 @@ IFMapNode *CfgListener::FindAdjacentIFMapNode(const Agent *agent,
                                               IFMapNode *node,
                                               const char *type) {
     IFMapAgentTable *table = static_cast<IFMapAgentTable *>(node->table());
-    for (DBGraphVertex::adjacency_iterator iter =
-         node->begin(table->GetGraph());
-         iter != node->end(table->GetGraph()); ++iter) {
+    DBGraph *graph = table->GetGraph();
+    for (DBGraphVertex::adjacency_iterator iter = node->begin(graph);
+         iter != node->end(graph); ++iter) {
         IFMapNode *adj_node = static_cast<IFMapNode *>(iter.operator->());
         if (SkipNode(adj_node)) {
             continue;

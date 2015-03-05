@@ -120,6 +120,9 @@ OvsdbClientIdl::OvsdbClientIdl(OvsdbClientSession *session, Agent *agent,
     ovsdb_wrapper_idl_set_callback(idl_, (void *)this,
             ovsdb_wrapper_idl_callback, ovsdb_wrapper_idl_txn_ack);
     parser_ = NULL;
+    receive_queue_ = new WorkQueue<OvsdbMsg *>(
+            TaskScheduler::GetInstance()->GetTaskId("Agent::KSync"), 0,
+            boost::bind(&OvsdbClientIdl::ProcessMessage, this, _1));
     for (int i = 0; i < OVSDB_TYPE_COUNT; i++) {
         callback_[i] = NULL;
     }
@@ -141,8 +144,20 @@ OvsdbClientIdl::OvsdbClientIdl(OvsdbClientSession *session, Agent *agent,
 
 OvsdbClientIdl::~OvsdbClientIdl() {
     TimerManager::DeleteTimer(keepalive_timer_);
+    receive_queue_->Shutdown();
+    delete receive_queue_;
     manager_->Free(route_peer_.release());
     ovsdb_wrapper_idl_destroy(idl_);
+}
+
+OvsdbClientIdl::OvsdbMsg::OvsdbMsg(struct jsonrpc_msg *m) : msg(m) {
+}
+
+OvsdbClientIdl::OvsdbMsg::~OvsdbMsg() {
+    if (this->msg != NULL) {
+        ovsdb_wrapper_jsonrpc_msg_destroy(this->msg);
+        this->msg = NULL;
+    }
 }
 
 void OvsdbClientIdl::OnEstablish() {
@@ -177,6 +192,9 @@ void OvsdbClientIdl::SendJsonRpc(struct jsonrpc_msg *msg) {
     free(s);
 }
 
+// This is invoked from OVSDB::IO task context. Handle the keepalive messages
+// in The OVSDB::IO task context itself. OVSDB::IO should not have exclusion
+// with any of the tasks
 void OvsdbClientIdl::MessageProcess(const u_int8_t *buf, std::size_t len) {
     std::size_t used = 0;
     // Multiple json message may be clubbed together, need to keep reading
@@ -190,7 +208,6 @@ void OvsdbClientIdl::MessageProcess(const u_int8_t *buf, std::size_t len) {
         std::size_t read;
         read = ovsdb_wrapper_json_parser_feed(parser_, (const char *)pkt,
                                               pkt_len);
-        OVSDB_PKT_TRACE(Trace, "Processed: " + std::string((const char *)pkt, read));
         used +=read;
 
         /* If we have complete JSON, attempt to parse it as JSON-RPC. */
@@ -202,7 +219,6 @@ void OvsdbClientIdl::MessageProcess(const u_int8_t *buf, std::size_t len) {
             if (error) {
                 assert(0);
                 free(error);
-                //continue;
             }
 
             if (ovsdb_wrapper_msg_echo_req(msg)) {
@@ -216,21 +232,41 @@ void OvsdbClientIdl::MessageProcess(const u_int8_t *buf, std::size_t len) {
                 // and suppress the message.
                 keepalive_wait_ = false;
             } else {
-                ovsdb_wrapper_idl_msg_process(idl_, msg);
-                continue;
+                // Process the received messages in a KSync workqueue task context,
+                // to assure only one thread is writting data to OVSDB client.
+                if (!deleted_) {
+                    OvsdbMsg *ovs_msg = new OvsdbMsg(msg);
+                    receive_queue_->Enqueue(ovs_msg);
+                    continue;
+                }
             }
             ovsdb_wrapper_jsonrpc_msg_destroy(msg);
         }
     }
 }
 
-struct ovsdb_idl_txn *OvsdbClientIdl::CreateTxn(OvsdbEntryBase *entry) {
+bool OvsdbClientIdl::ProcessMessage(OvsdbMsg *msg) {
+    if (!deleted_) {
+        ovsdb_wrapper_idl_msg_process(idl_, msg->msg);
+        // msg->msg is freed by process method above
+        msg->msg = NULL;
+    }
+    delete msg;
+    return true;
+}
+
+struct ovsdb_idl_txn *OvsdbClientIdl::CreateTxn(OvsdbEntryBase *entry,
+                                            KSyncEntry::KSyncEvent ack_event) {
     if (deleted_) {
         // Don't create new transactions for deleted idl.
         return NULL;
     }
     struct ovsdb_idl_txn *txn =  ovsdb_wrapper_idl_txn_create(idl_);
     pending_txn_[txn] = entry;
+    if (entry != NULL) {
+        // if entry is available store the ack_event in entry
+        entry->ack_event_ = ack_event;
+    }
     return txn;
 }
 

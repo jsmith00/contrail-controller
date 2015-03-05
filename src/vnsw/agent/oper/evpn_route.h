@@ -46,18 +46,24 @@ public:
                          const SecurityGroupList &sg_id_list,
                          const PathPreference &path_pref,
                          uint32_t ethernet_tag);
-    static void ResyncVmRouteReq(const Peer *peer,
-                                 const string &vrf_name,
-                                 const MacAddress &mac,
-                                 const IpAddress &ip_addr,
-                                 uint32_t ethernet_tag,
-                                 AgentRouteData *data);
+    static void ResyncVmRoute(const Peer *peer,
+                              const string &vrf_name,
+                              const MacAddress &mac,
+                              const IpAddress &ip_addr,
+                              uint32_t ethernet_tag,
+                              AgentRouteData *data);
     static void AddRemoteVmRouteReq(const Peer *peer,
                                     const std::string &vrf_name,
                                     const MacAddress &mac,
                                     const IpAddress &ip_addr,
                                     uint32_t ethernet_tag,
                                     AgentRouteData *data);
+    static void AddRemoteVmRoute(const Peer *peer,
+                                 const std::string &vrf_name,
+                                 const MacAddress &mac,
+                                 const IpAddress &ip_addr,
+                                 uint32_t ethernet_tag,
+                                 AgentRouteData *data);
 
     //Delete routines
     void DelLocalVmRoute(const Peer *peer, const std::string &vrf_name,
@@ -104,10 +110,6 @@ public:
     }
     virtual bool DBEntrySandesh(Sandesh *sresp, bool stale) const;
     virtual uint32_t GetActiveLabel() const;
-    virtual bool RecomputeRoutePath(Agent *agent,
-                                    DBTablePartition *part,
-                                    AgentPath *path,
-                                    AgentRouteData *data);
 
     const MacAddress &mac() const {return mac_;}
     const IpAddress &ip_addr() const {return ip_addr_;}
@@ -115,7 +117,6 @@ public:
     uint32_t ethernet_tag() const {return ethernet_tag_;}
 
 private:
-    bool FloodDhcpRequired() const;
 
     MacAddress mac_;
     IpAddress ip_addr_;

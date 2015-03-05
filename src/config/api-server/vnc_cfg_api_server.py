@@ -323,7 +323,7 @@ class VncApiServer(VncApiServerGen):
             self._homepage_links.append(link)
 
         # Register for VN delete request. Disallow delete of system default VN
-        bottle.route('/virtual-network/<id>', 'DELETE', self.virtual_network_http_delete)
+        self.route('/virtual-network/<id>', 'DELETE', self.virtual_network_http_delete)
 
         bottle.route('/documentation/<filename:path>',
                      'GET', self.documentation_http_get)
@@ -614,9 +614,15 @@ class VncApiServer(VncApiServerGen):
     # end homepage_http_get
 
     def documentation_http_get(self, filename):
+        # ubuntu packaged path
+        doc_root = '/usr/share/doc/contrail-config/doc/contrail-config/html/'
+        if not os.path.exists(doc_root):
+            # centos packaged path
+            doc_root='/usr/share/doc/python-vnc_cfg_api_server/contrial-config/html/'
+
         return bottle.static_file(
-            filename,
-            root='/usr/share/doc/python-vnc_cfg_api_server/build/html')
+                filename,
+                root=doc_root)
     # end documentation_http_get
 
     def ref_update_http_post(self):

@@ -32,7 +32,7 @@ void AgentDBEntry::PostAdd() {
 }
 
 void AgentDBTable::NotifyEntry(DBEntryBase *e) {
-    CHECK_CONCURRENCY("db::DBTable");
+    agent_->ConcurrencyCheck();
     DBTablePartBase *tpart =
         static_cast<DBTablePartition *>(GetTablePartition(e));
     tpart->Notify(e);
@@ -93,6 +93,10 @@ void AgentDBTablePartition::Remove(DBEntryBase *entry) {
     DBTablePartition::Remove(entry);
 }
 
+bool AgentDBTable::IFNodeToUuid(IFMapNode *node, boost::uuids::uuid &id) {
+    return false;
+}
+
 void AgentDBTable::Input(DBTablePartition *partition, DBClient *client,
                          DBRequest *req) {
     AgentKey *key = static_cast<AgentKey *>(req->key.get());
@@ -137,7 +141,7 @@ void AgentDBTable::Clear() {
 }
 
 void AgentDBTable::Process(DBRequest &req) {
-    CHECK_CONCURRENCY("db::DBTable");
+    agent_->ConcurrencyCheck();
     DBTablePartition *tpart =
         static_cast<DBTablePartition *>(GetTablePartition(req.key.get()));
     tpart->Process(NULL, &req);
