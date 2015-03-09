@@ -113,9 +113,12 @@ class InstanceManager(object):
             if irt.fq_name == rt_fq_name:
                 rt_obj.set_interface_route_table_routes(static_routes)
                 self._vnc_lib.interface_route_table_update(rt_obj)
-                return
+                return rt_obj
 
-        self._vnc_lib.interface_route_table_create(rt_obj)
+        try:
+            self._vnc_lib.interface_route_table_create(rt_obj)
+        except RefsExistError:
+            self._vnc_lib.interface_route_table_update(rt_obj)
         return rt_obj
 
     def update_static_routes(self, si):
@@ -369,7 +372,10 @@ class InstanceManager(object):
                 vmi_updated = True
 
         if vmi_create:
-            self._vnc_lib.virtual_machine_interface_create(vmi_obj)
+            try:
+                self._vnc_lib.virtual_machine_interface_create(vmi_obj)
+            except RefsExistError:
+                self._vnc_lib.virtual_machine_interface_update(vmi_obj)
         elif vmi_updated:
             self._vnc_lib.virtual_machine_interface_update(vmi_obj)
 
@@ -427,7 +433,7 @@ class InstanceManager(object):
                 si.uuid, vm.uuid)
             if chosen_vr_fq_name:
                 vrouter_name = chosen_vr_fq_name[-1]
-                self.logger.log_info("Info: VRouter %s updated with VM %s" %
+                self.logger.log_info("VRouter %s updated with VM %s" %
                     (':'.join(chosen_vr_fq_name), vm.name))
         else:
             vr = VirtualRouterSM.get(vm.virtual_router)
@@ -452,7 +458,7 @@ class VRouterHostedManager(InstanceManager):
             vr_obj = self._vnc_lib.virtual_router_read(id=vm.virtual_router)
             vr_obj.del_virtual_machine(vm_obj)
             self._vnc_lib.virtual_router_update(vr_obj)
-            self.logger.log_info("vm %s deleted from vrvm %s" %
+            self.logger.log_info("vm %s deleted from vr %s" %
                 (vm_obj.get_fq_name_str(), vr_obj.get_fq_name_str()))
 
         self._vnc_lib.virtual_machine_delete(id=vm.uuid)
@@ -469,7 +475,7 @@ class VRouterHostedManager(InstanceManager):
                 if self.vrouter_scheduler.vrouter_running(vr.name):
                     continue
                 vr_obj = VirtualRouter()
-                vr_obj.uuid = vr.vr_id
+                vr_obj.uuid = vr.uuid
                 vr_obj.fq_name = vr.fq_name
                 vm_obj = VirtualMachine()
                 vm_obj.uuid = vm.uuid
@@ -489,11 +495,10 @@ class NetworkNamespaceManager(VRouterHostedManager):
             return
 
         # get current vm list
-        vm_list = [None for i in range(0, si.max_instances)]
+        vm_list = [None] * si.max_instances
         for vm_id in si.virtual_machines:
             vm = VirtualMachineSM.get(vm_id)
-            index = int(vm.display_name.split('__')[-2]) - 1
-            vm_list[index] = vm
+            vm_list[vm.index] = vm
 
         # create and launch vm
         si.state = 'launching'

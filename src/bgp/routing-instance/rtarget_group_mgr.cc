@@ -337,6 +337,7 @@ bool RTargetGroupMgr::IsRTargetRouteOnList(RTargetRoute *rt) const {
 }
 
 void RTargetGroupMgr::Initialize() {
+    assert(table_state_.empty());
     RoutingInstanceMgr *mgr = server()->routing_instance_mgr();
     RoutingInstance *master =
         mgr->GetRoutingInstance(BgpConfigManager::kMasterInstance);
@@ -352,15 +353,17 @@ void RTargetGroupMgr::Initialize() {
         if (!it->second->IsVpnTable()) continue;
 
         BgpTable *vpntable = it->second;
-        id = vpntable->Register(boost::bind(&RTargetGroupMgr::VpnRouteNotify,
-                                            this, _1, _2));
+        id = vpntable->Register(
+            boost::bind(&RTargetGroupMgr::VpnRouteNotify, this, _1, _2),
+            "RTargetGroupMgr");
         ts = new RtGroupMgrTableState(vpntable, id);
         table_state_.insert(std::make_pair(vpntable, ts));
     }
 
     BgpTable *rttable = master->GetTable(Address::RTARGET);
-    id = rttable->Register(boost::bind(&RTargetGroupMgr::RTargetRouteNotify,
-                                      this, _1, _2));
+    id = rttable->Register(
+        boost::bind(&RTargetGroupMgr::RTargetRouteNotify, this, _1, _2),
+        "RTargetGroupMgr");
     ts = new RtGroupMgrTableState(rttable, id);
     table_state_.insert(std::make_pair(rttable, ts));
 }

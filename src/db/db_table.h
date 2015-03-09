@@ -16,6 +16,7 @@ class DBEntryBase;
 class DBEntry;
 class DBTablePartBase;
 class DBTablePartition;
+class ShowTableListener;
 
 class DBRequestKey {
 public:
@@ -52,6 +53,7 @@ class DBTableBase {
 public:
     typedef boost::function<void(DBTablePartBase *, DBEntryBase *)> ChangeCallback;
     typedef int ListenerId;
+
     static const int kInvalidId = -1;
 
     DBTableBase(DB *db, const std::string &name);
@@ -73,7 +75,8 @@ public:
 
 
     // Register a DB listener.
-    ListenerId Register(ChangeCallback callback);
+    ListenerId Register(ChangeCallback callback,
+        const std::string &name = "unspecified");
     void Unregister(ListenerId listener);
 
     void RunNotify(DBTablePartBase *tpart, DBEntryBase *entry);
@@ -81,12 +84,17 @@ public:
     // Calculate the size across all partitions.
     virtual size_t Size() const { return 0; }
 
+    // Suspended deletion resume hook for user function
+    virtual void RetryDelete() { }
+
     DB *database() { return db_; }
     const DB *database() const { return db_; }
 
     const std::string &name() const { return name_; }
 
     bool HasListeners() const;
+    size_t GetListenerCount() const;
+    void FillListeners(std::vector<ShowTableListener> *listeners) const;
 
 private:
     class ListenerInfo;
@@ -142,9 +150,6 @@ public:
     virtual bool OnChange(DBEntry *entry, const DBRequest *req);
     // Delete hook for user function
     virtual bool Delete(DBEntry *entry, const DBRequest *req);
-
-    // Suspended deletion resume hook for user function
-    virtual void RetryDelete() { }
 
     void WalkCompleteCallback(DBTableBase *tbl_base);
     void NotifyAllEntries();

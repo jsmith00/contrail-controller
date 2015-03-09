@@ -1207,9 +1207,9 @@ class SecurityGroupST(DictST):
                 _vnc_lib.access_control_list_update(acl)
     # end update_acl
                 
-    def __init__(self, name):
+    def __init__(self, name, obj=None):
         self.name = name
-        self.obj = _vnc_lib.security_group_read(fq_name_str=name)
+        self.obj = obj or _vnc_lib.security_group_read(fq_name_str=name)
         self.config_sgid = None
         self.sg_id = None
         self.ingress_acl = None
@@ -1226,7 +1226,6 @@ class SecurityGroupST(DictST):
                 _vnc_lib.access_control_list_delete(id=acl['uuid'])
         config_id = self.obj.get_configured_security_group_id() or 0
         self.set_configured_security_group_id(config_id)
-        self.update_policy_entries(self.obj.get_security_group_entries())
     # end __init__
 
     def set_configured_security_group_id(self, config_id):
@@ -2586,39 +2585,37 @@ class SchemaTransformer(object):
 
     # Clean up stale objects
     def reinit(self):
-        ri_list = _vnc_lib.routing_instances_list()['routing-instances']
+        vn_list = _vnc_lib.virtual_networks_list()['virtual-networks']
+        vn_id_list = [vn['uuid'] for vn in vn_list]
+        ri_list = _vnc_lib.routing_instances_list(detail=True)
         for ri in ri_list:
-            try:
-                ri_obj = _vnc_lib.routing_instance_read(id=ri['uuid'])
-            except NoIdError:
-                continue
-            try:
-                _vnc_lib.virtual_network_read(id=ri_obj.parent_uuid)
-            except NoIdError:
+            if ri.parent_uuid not in vn_id_list:
                 try:
-                    ri_obj = RoutingInstanceST(ri_obj)
+                    ri_obj = RoutingInstanceST(ri)
                     ri_obj.delete()
                 except NoIdError:
                     pass
         # end for ri
 
-        acl_list = _vnc_lib.access_control_lists_list()['access-control-lists']
+        sg_list = _vnc_lib.security_groups_list(detail=True)
+        sg_id_list = [sg.uuid for sg in sg_list]
+        acl_list = _vnc_lib.access_control_lists_list(detail=True)
         for acl in acl_list or []:
-            try:
-                acl_obj = _vnc_lib.access_control_list_read(id=acl['uuid'])
-            except NoIdError:
-                continue
-            try:
-                if acl_obj.parent_type == 'virtual-network':
-                    _vnc_lib.virtual_network_read(id=acl_obj.parent_uuid)
-                elif acl_obj.parent_type == 'security-group':
-                    _vnc_lib.security_group_read(id=acl_obj.parent_uuid)
-            except NoIdError:
+            if acl.parent_type == 'virtual-network':
+                parent_list = vn_id_list
+            elif acl.parent_type == 'security-group':
+                parent_list = sg_id_list
+            else:
+                parent_list = []
+            if acl.parent_uuid not in parent_list:
                 try:
-                    _vnc_lib.access_control_list_delete(id=acl['uuid'])
+                    _vnc_lib.access_control_list_delete(id=acl.uuid)
                 except NoIdError:
                     pass
         # end for acl
+
+        for sg in sg_list:
+            SecurityGroupST.locate(sg.get_fq_name_str(), sg)
     # end reinit
 
     def cleanup(self):
