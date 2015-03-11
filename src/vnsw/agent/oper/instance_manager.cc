@@ -20,7 +20,8 @@
 #include "oper/operdb_init.h"
 #include "oper/service_instance.h"
 #include "oper/vm.h"
-#include "oper/instance_manager_adapter.h"
+#include "oper/docker_instance_adapter.h"
+#include "oper/netns_instance_adapter.h"
 #include "base/util.h"
 
 using boost::uuids::uuid;
@@ -385,7 +386,12 @@ InstanceTaskQueue *InstanceManager::GetTaskQueue(const std::string &str) {
 
 bool InstanceManager::StartTask(InstanceTaskQueue *task_queue,
                                 InstanceTask *task) {
-    pid_t pid = task->Run();
+    pid_t pid;
+    if (task->Run())
+        pid = task->pid();
+    else
+        return false;
+
     InstanceState *state = GetState(task);
     if (state != NULL) {
         state->set_pid(pid);
@@ -564,7 +570,7 @@ void InstanceManager::StopStaleNetNS(ServiceInstance::Properties &props) {
         cmd_str << " --pool-id " << props.pool_id;
     }
 
-    InstanceTask *task = new InstanceTask(cmd_str.str(), Stop,
+    InstanceTask *task = new InstanceTaskExecvp(cmd_str.str(), Stop,
                                 agent_->event_manager());
     Enqueue(task, props.instance_id);
 
