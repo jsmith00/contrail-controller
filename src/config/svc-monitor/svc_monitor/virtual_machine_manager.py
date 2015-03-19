@@ -32,6 +32,8 @@ class VirtualMachineManager(InstanceManager):
         else:
             flavor = self._nc.oper('flavors', 'find', proj_name, ram=4096)
         if not flavor:
+            self.logger.log_error("Flavor not found %s" %
+                ((':').join(st.fq_name)))
             return None
 
         image = self._nc.oper('images', 'find', proj_name, name=si.image)
@@ -89,8 +91,8 @@ class VirtualMachineManager(InstanceManager):
         # check image and flavor
         si.flavor = st.params.get('flavor', None)
         si.image = st.params.get('image_name', None)
-        if not (si.flavor or si.image):
-            self.logger.log_error("Image/flavor not present in %s" %
+        if not si.image:
+            self.logger.log_error("Image not present in %s" %
                 ((':').join(st.fq_name)))
             return False
 
@@ -110,8 +112,14 @@ class VirtualMachineManager(InstanceManager):
 
         # get current vm list
         vm_list = [None] * si.max_instances
-        for vm_id in si.virtual_machines:
+        vm_id_list = si.virtual_machines
+        for vm_id in vm_id_list:
             vm = VirtualMachineSM.get(vm_id)
+            if not vm:
+                continue
+            if (vm.index + 1) > si.max_instances:
+                self.delete_service(vm)
+                continue
             vm_list[vm.index] = vm
 
         # create and launch vm
@@ -146,12 +154,6 @@ class VirtualMachineManager(InstanceManager):
 
     def check_service(self, si):
         for vm_id in si.virtual_machines:
-            # check if max instance count is reduced
-            vm = VirtualMachineSM.get(vm_id)
-            if vm and ((vm.index + 1) > si.max_instances):
-                delete_service(vm)
-                continue
-
             vm = self._nc.oper('servers', 'get', si.proj_name, id=vm_id)
             if vm and vm.status == 'ERROR':
                 try:

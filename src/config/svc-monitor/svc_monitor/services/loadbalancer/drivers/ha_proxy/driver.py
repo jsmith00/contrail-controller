@@ -4,8 +4,6 @@
 
 import uuid
 
-from neutron.common import exceptions as n_exc
-from neutron.openstack.common import log as logging
 import svc_monitor.services.loadbalancer.drivers.abstract_driver as abstract_driver
 
 from vnc_api.vnc_api import ServiceInstance, ServiceInstanceType
@@ -13,8 +11,6 @@ from vnc_api.vnc_api import ServiceScaleOutType, ServiceInstanceInterfaceType
 from vnc_api.vnc_api import NoIdError, RefsExistError
 import neutron_plugin_contrail.plugins.opencontrail.loadbalancer.utils
 import neutron_plugin_contrail.plugins.opencontrail.loadbalancer.utils as utils
-
-LOG = logging.getLogger(__name__)
 
 LOADBALANCER_SERVICE_TEMPLATE = [
     'default-domain',
@@ -24,21 +20,17 @@ LOADBALANCER_SERVICE_TEMPLATE = [
 
 class OpencontrailLoadbalancerDriver(
         abstract_driver.ContrailLoadBalancerAbstractDriver):
-    def __init__(self, manager, api, args=None):
+    def __init__(self, manager, api, db, args=None):
         self._api = api
+        self._svc_manager = manager
         self._lb_template = None
+        self.db = db
 
     def _get_template(self):
         if self._lb_template is not None:
             return
-        try:
-            tmpl = self._api.service_template_read(
+        self._lb_template = self._api.service_template_read(
                 fq_name=LOADBALANCER_SERVICE_TEMPLATE)
-        except NoIdError:
-            msg = ('Loadbalancer service-template not found when '
-                   'attempting to create pool')
-            raise n_exc.BadRequest(resource='pool', msg=msg)
-        self._lb_template = tmpl
 
     def _get_virtual_ip_interface(self, vip):
         vmi_list = vip.get_virtual_machine_interface_refs()
@@ -48,7 +40,9 @@ class OpencontrailLoadbalancerDriver(
             vmi = self._api.virtual_machine_interface_read(
                 id=vmi_list[0]['uuid'])
         except NoIdError as ex:
-            LOG.error(ex)
+            msg = ("In _get_virtual_ip_interface: VMI %s not found %s" % 
+                   (vmi_list[0]['uuid'], str(ex)))
+            self._svc_manager.logger.log_error(msg)
             return None
         return vmi
 
@@ -60,7 +54,9 @@ class OpencontrailLoadbalancerDriver(
         try:
             iip = self._api.instance_ip_read(id=ip_refs[0]['uuid'])
         except NoIdError as ex:
-            LOG.error(ex)
+            msg = ("In _get_interface_address: IIP %s not found %s" % 
+                  (ip_refs[0]['uuid'], str(ex)))
+            self._svc_manager.logger.log_error(msg)
             return None
         return iip.get_instance_ip_address()
 
@@ -96,7 +92,7 @@ class OpencontrailLoadbalancerDriver(
             try:
                 vnet = self._api.virtual_network_read(id=backnet_id)
             except NoIdError as ex:
-                LOG.error(ex)
+                self._svc_manager.logger.log_error(str(ex))
                 return None
             left_virtual_network = ':'.join(vnet.get_fq_name())
             left_if = ServiceInstanceInterfaceType(
@@ -139,13 +135,15 @@ class OpencontrailLoadbalancerDriver(
             pool = self._api.loadbalancer_pool_read(id=pool_id)
         except NoIdError:
             msg = ('Unable to retrieve pool %s' % pool_id)
-            raise n_exc.BadRequest(resource='pool', msg=msg)
+            self._svc_manager.logger.log_error(msg)
+            return
 
         try:
             vip = self._api.virtual_ip_read(id=vip_id)
         except NoIdError:
             msg = ('Unable to retrieve virtual-ip %s' % vip_id)
-            raise n_exc.BadRequest(resource='vip', msg=msg)
+            self._svc_manager.logger.log_error(msg)
+            return
 
         fq_name = pool.get_fq_name()[:-1]
         fq_name.append(pool_id)
@@ -155,7 +153,7 @@ class OpencontrailLoadbalancerDriver(
             try:
                 self._api.service_instance_delete(fq_name=fq_name)
             except RefsExistError as ex:
-                LOG.error(ex)
+                self._svc_manager.logger.log_error(str(ex))
             return
 
         self._get_template()
@@ -177,21 +175,17 @@ class OpencontrailLoadbalancerDriver(
         if si_refs is None or si_refs[0]['uuid'] != si_obj.uuid:
             pool.set_service_instance(si_obj)
             self._api.loadbalancer_pool_update(pool)
+        self.db.pool_driver_info_insert(pool_id, {'service_instance': si_obj.uuid})
 
     def _clear_loadbalancer_instance(self, tenant_id, pool_id):
-        try:
-            project = self._api.project_read(
-                id=str(uuid.UUID(tenant_id)))
-        except NoIdError as ex:
-            LOG.error(ex)
+        driver_data = self.db.pool_driver_info_get(pool_id)
+        if driver_data is None:
             return
-        fq_name = list(project.get_fq_name())
-        fq_name.append(pool_id)
-
+        si_id = driver_data['service_instance']
         try:
-            si_obj = self._api.service_instance_read(fq_name=fq_name)
+            si_obj = self._api.service_instance_read(id=si_id)
         except NoIdError as ex:
-            LOG.error(ex)
+            self._svc_manager.logger.log_error(str(ex))
             return
 
         pool_back_refs = si_obj.get_loadbalancer_pool_back_refs()
@@ -202,9 +196,10 @@ class OpencontrailLoadbalancerDriver(
             self._api.loadbalancer_pool_update(pool_obj)
 
         try:
-            self._api.service_instance_delete(fq_name=fq_name)
+            self._api.service_instance_delete(id=si_id)
         except RefsExistError as ex:
-            LOG.error(ex)
+            self._svc_manager.logger.log_error(str(ex))
+        self.db.pool_remove(pool_id, ['service_instance'])
 
     def create_vip(self, vip):
         """A real driver would invoke a call to his backend
@@ -260,7 +255,8 @@ class OpencontrailLoadbalancerDriver(
         self.plugin._delete_db_pool(pool["id"])
         or set the status to ERROR if deletion failed
         """
-        pass
+        if pool['vip_id']:
+            self._clear_loadbalancer_instance(pool['tenant_id'], pool['id'])
 
     def stats(self, pool_id):
         pass

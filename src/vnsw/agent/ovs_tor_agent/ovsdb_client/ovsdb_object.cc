@@ -66,21 +66,26 @@ OvsdbDBObject::~OvsdbDBObject() {
 
 void OvsdbDBObject::NotifyAddOvsdb(OvsdbDBEntry *key, struct ovsdb_idl_row *row) {
     OvsdbDBEntry *entry = static_cast<OvsdbDBEntry *>(Find(key));
-    if (entry) {
+    // Check if entry is present and active. in case if we find an entry
+    // which is inactive, we will need to alloc ovs entry and trigger
+    // delete to update ovsdb-server
+    if (entry && entry->IsActive()) {
         // trigger notify add for the entry, to update ovs_idl state
         entry->NotifyAdd(row);
     } else {
         OvsdbDBEntry *del_entry = AllocOvsEntry(row);
-        del_entry->ovs_entry_ = row;
+        // trigger notify add for the entry, to update ovs_idl state
+        del_entry->NotifyAdd(row);
         Delete(del_entry);
     }
 }
 
-void OvsdbDBObject::NotifyDeleteOvsdb(OvsdbDBEntry *key) {
+void OvsdbDBObject::NotifyDeleteOvsdb(OvsdbDBEntry *key,
+                                      struct ovsdb_idl_row *row) {
     OvsdbDBEntry *entry = static_cast<OvsdbDBEntry *>(Find(key));
     if (entry) {
         // trigger notify delete for the entry, to reset ovs_idl state
-        entry->NotifyDelete();
+        entry->NotifyDelete(row);
         if (!entry->IsDelAckWaiting()) {
             // we were not waiting for delete to happen, state for
             // OVSDB server and client mismatch happend.

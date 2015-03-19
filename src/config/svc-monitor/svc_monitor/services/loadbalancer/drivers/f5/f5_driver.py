@@ -7,8 +7,6 @@ from cStringIO import StringIO
 import uuid
 import netaddr
 
-from neutron.common import exceptions as n_exc
-from neutron.openstack.common import log as logging
 import svc_monitor.services.loadbalancer.drivers.abstract_driver as abstract_driver
 
 from cfgm_common.zkclient import ZookeeperClient,IndexAllocator
@@ -21,10 +19,7 @@ from f5.bigip import exceptions as f5ex
 from f5.bigip import bigip_interfaces
 from f5.bigip.bigip_interfaces import strip_folder_and_prefix
 
-from db import F5LBDB
 from svc_monitor.config_db import *
-
-LOG = logging.getLogger(__name__)
 
 APP_COOKIE_RULE_PREFIX = 'app_cookie_'
 RPS_THROTTLE_RULE_PREFIX = 'rps_throttle_'
@@ -71,18 +66,17 @@ class OpencontrailF5LoadbalancerDriver(
         if not self.mx_ip or not self.mx_f5_interface or not self.f5_mx_interface:
             raise InvalidConfigError
 
-    def __init__(self, manager, api, args=None):
+    def __init__(self, manager, api, db, args=None):
         self._vlan_allocator = None
         self._api = api
         self._svc_mon = manager
         self._args = args
+        self.db = db
         self.fill_config_options(args.config_sections)
         self.connected = False
         self._init_connection()
         self.mx_physical_router = self.create_physical_router(self.mx_name, self.mx_ip)
         self.mx_physical_interface = self.create_ifd_on_mx(self.mx_f5_interface)
-        self.db = F5LBDB(args)
-        self.db.init_database()
     # end  __init__
 
     def init_traffic_groups(self, bigip):
@@ -941,7 +935,7 @@ class OpencontrailF5LoadbalancerDriver(
         if not len(self.project_list[pool_info['tenant_id']]):
             bigips = self.__bigips.values()
             for bigip in bigips:
-		bigip.arp.delete_all(folder=pool_info['tenant_id'])
+                bigip.arp.delete_all(folder=pool_info['tenant_id'])
                 bigip.route.delete_domain(folder=pool_info['tenant_id'])
                 bigip.system.delete_folder(
                             folder=bigip.decorate_folder(pool_info['tenant_id']))
@@ -949,7 +943,7 @@ class OpencontrailF5LoadbalancerDriver(
     # end release_resource
 
     def locate_resources(self, pool, add_change=True):
-        pool_in_db = self.db.pool_get(pool)
+        pool_in_db = self.db.pool_driver_info_get(pool)
         if not add_change:
             return (pool_in_db, None)
 
@@ -1237,7 +1231,7 @@ class OpencontrailF5LoadbalancerDriver(
                 self.update_service(old_pool_svc, new_pool_svc)
             else:
                 return
-            self.db.pool_insert(pool['id'], new_pool_svc)
+            self.db.pool_driver_info_insert(pool['id'], new_pool_svc)
         except Exception as e:
             string_buf = StringIO()
             cgitb.Hook(
@@ -1265,7 +1259,7 @@ class OpencontrailF5LoadbalancerDriver(
                 self.update_service(old_pool_svc, new_pool_svc)
             else:
                 return
-            self.db.pool_insert(pool['id'], new_pool_svc)
+            self.db.pool_driver_info_insert(pool['id'], new_pool_svc)
         except Exception as e:
             string_buf = StringIO()
             cgitb.Hook(

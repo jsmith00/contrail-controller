@@ -318,6 +318,10 @@ class ServiceInstanceSM(DBBase):
         self.local_preference = [None, None]
         self.vn_info = []
         self.update(obj_dict)
+        if self.ha_mode == 'active-standby':
+            self.max_instances = 2
+            self.local_preference = [svc_info.get_active_preference(),
+                                     svc_info.get_standby_preference()]
     # end __init__
 
     def update(self, obj=None):
@@ -333,11 +337,7 @@ class ServiceInstanceSM(DBBase):
         self.id_perms = obj['id_perms']
         self.vr_id = self.params.get('virtual_router_id', None)
         self.ha_mode = self.params.get('ha_mode', None)
-        if self.ha_mode and self.ha_mode == 'active-standby':
-            self.max_instances = 2
-            self.local_preference = [svc_info.get_active_preference(),
-                svc_info.get_standby_preference()]
-        else:
+        if self.ha_mode != 'active-standby':
             scale_out = self.params.get('scale_out', None)
             if scale_out:
                 self.max_instances = scale_out.get('max_instances', 1)
@@ -363,7 +363,7 @@ class ServiceTemplateSM(DBBase):
     def __init__(self, uuid, obj_dict=None):
         self.uuid = uuid
         self.service_instances = set()
-        self.virtualization_type = None
+        self.virtualization_type = 'virtual-machine'
         self.update(obj_dict)
     # end __init__
 
@@ -373,10 +373,9 @@ class ServiceTemplateSM(DBBase):
         self.name = obj['fq_name'][-1]
         self.fq_name = obj['fq_name']
         self.params = obj.get('service_template_properties')
-        self.virtualization_type = self.params.get(
-            'service_virtualization_type', None)
-        if not self.virtualization_type:
-            self.virtualization_type = 'virtual-machine'
+        if self.params:
+            self.virtualization_type = self.params.get(
+                'service_virtualization_type', 'virtual-machine')
         self.update_multiple_refs('service_instance', obj)
         self.id_perms = obj['id_perms']
     # end update

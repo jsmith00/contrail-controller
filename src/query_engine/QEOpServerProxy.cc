@@ -92,7 +92,7 @@ public:
         bool found = false;
         for (size_t j = 0; j < columns.size(); j++)
         {
-            if (0 == map_it->first.compare(0,5,string("COUNT"))) {
+            if ((0 == map_it->first.compare(0,5,string("COUNT")))) {
                 rapidjson::Value val(rapidjson::kNumberType);
                 unsigned long num = 0;
                 stringToInteger(map_it->second, num);
@@ -100,6 +100,13 @@ public:
                 dd.AddMember(map_it->first.c_str(), val, dd.GetAllocator());
                 found = true;
             } else if (columns[j].name == map_it->first) {
+                if (map_it->second.length() == 0) {
+                    rapidjson::Value val(rapidjson::kNullType);
+                    dd.AddMember(map_it->first.c_str(), val, dd.GetAllocator());
+                    found = true;
+                    continue;
+                }
+
                 // find out type and convert
                 if (columns[j].datatype == "string" || 
                     columns[j].datatype == "uuid")
