@@ -150,7 +150,6 @@ class Controller(object):
         PartitionStatusReq.handle_request = self.handle_PartitionStatusReq
         UVETableAlarmReq.handle_request = self.handle_UVETableAlarmReq 
 
-
     def libpart_cb(self, part_list):
 
         newset = set(part_list)
@@ -193,13 +192,15 @@ class Controller(object):
         no_handlers = set()
         for uv in uves:
             tab = uv.split(':',1)[0]
+            uve_name = uv.split(':',1)[1]
             if not self.mgrs.has_key(tab):
                 no_handlers.add(tab)
                 continue
             if remove:
                 uve_data = []
             else:
-                itr = self._us.multi_uve_get(uv, True, None, None, None, None)
+                filters = {'kfilt': [uve_name]}
+                itr = self._us.multi_uve_get(tab, True, filters)
                 uve_data = itr.next()['value']
             if len(uve_data) == 0:
                 self._logger.info("UVE %s deleted" % uv)
@@ -452,6 +453,7 @@ class Controller(object):
             aly_cpu_info.inst_id = self._instance_id
             aly_cpu_info.cpu_share = mod_cpu_info.cpu_info.cpu_share
             aly_cpu_info.mem_virt = mod_cpu_info.cpu_info.meminfo.virt
+            aly_cpu_info.mem_res = mod_cpu_info.cpu_info.meminfo.res
             aly_cpu_state.cpu_info = [aly_cpu_info]
 
             aly_cpu_state_trace = AnalyticsCpuStateTrace(data=aly_cpu_state)

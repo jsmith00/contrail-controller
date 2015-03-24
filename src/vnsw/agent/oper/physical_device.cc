@@ -12,6 +12,7 @@
 #include <cfg/cfg_listener.h>
 #include <oper/agent_sandesh.h>
 #include <oper/operdb_init.h>
+#include <oper/config_manager.h>
 #include <oper/ifmap_dependency_manager.h>
 
 #include <oper/physical_device.h>
@@ -163,8 +164,12 @@ void PhysicalDeviceTable::RegisterDBClients(IFMapDependencyManager *dep) {
     typedef IFMapDependencyTracker::PropagateList PropagateList;
     typedef IFMapDependencyTracker::ReactionMap ReactionMap;
 
+    // physical_device is created from ConfigManager change-list. Its possbile
+    // that physical-interface link is processed before physical-device is
+    // created. Let dependency manager to trigger all child physical-interfaces
+    // on create
     ReactionMap device_react = map_list_of<std::string, PropagateList>
-        ("self", list_of("self"))
+        ("self", list_of("self")("physical-router-physical-interface"))
         ("physical-router-physical-interface", list_of("self"));
     dep->RegisterReactionMap("physical-router", device_react);
 
@@ -199,6 +204,28 @@ bool PhysicalDeviceTable::IFNodeToUuid(IFMapNode *node, boost::uuids::uuid &u) {
     return true;
 }
 
+bool PhysicalDeviceTable::ProcessConfig(IFMapNode *node, DBRequest &req) {
+    autogen::PhysicalRouter *router = static_cast <autogen::PhysicalRouter *>
+        (node->GetObject());
+    assert(router);
+
+    boost::uuids::uuid u;
+    if (agent()->cfg_listener()->GetCfgDBStateUuid(node, u) == false)
+        return false;
+
+    req.key.reset(BuildKey(router, u));
+    if (node->IsDeleted()) {
+        req.oper = DBRequest::DB_ENTRY_DELETE;
+        return true;
+    }
+
+    req.oper = DBRequest::DB_ENTRY_ADD_CHANGE;
+    req.data.reset(BuildData(agent(), node, router));
+    Enqueue(&req);
+
+    return false;
+}
+
 bool PhysicalDeviceTable::IFNodeToReq(IFMapNode *node, DBRequest &req) {
     autogen::PhysicalRouter *router = static_cast <autogen::PhysicalRouter *>
         (node->GetObject());
@@ -211,18 +238,10 @@ bool PhysicalDeviceTable::IFNodeToReq(IFMapNode *node, DBRequest &req) {
     req.key.reset(BuildKey(router, u));
     if (node->IsDeleted()) {
         req.oper = DBRequest::DB_ENTRY_DELETE;
-        agent()->physical_device_vn_table()->ConfigUpdate(node);
         return true;
     }
 
-    req.oper = DBRequest::DB_ENTRY_ADD_CHANGE;
-    req.data.reset(BuildData(agent(), node, router));
-    // Enqueue request for physical-router before DBRequest for
-    // physical-router vn entry is processed below
-    Enqueue(&req);
-
-    agent()->physical_device_vn_table()->ConfigUpdate(node);
-    // Return false since DBRequest already enqueued above.
+    agent()->config_manager()->AddPhysicalDeviceNode(node);
     return false;
 }
 
